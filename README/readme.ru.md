@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  🔗 <a href="http://193.23.197.198/authorization/signin.html" target="_blank"><strong>Попробуйте демо версию!</strong></a>  
+  🔗 <a href="http://144.21.36.114/authorization/signin.html" target="_blank"><strong>Попробуйте демо версию!</strong></a>  
   <br/>
   <code>Логин:</code> <strong>demo</strong> &nbsp;•&nbsp; <code>Пароль:</code> <strong>Demodemo123</strong>
 </p>
