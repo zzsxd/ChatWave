@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  🔗 <a href="http://193.23.197.198/authorization/signin.html" target="_blank"><strong>Try the Live Demo</strong></a>  
+  🔗 <a href="http://144.21.36.114/authorization/signin.html" target="_blank"><strong>Try the Live Demo</strong></a>  
   <br/>
   <code>Login:</code> <strong>demo</strong> &nbsp;•&nbsp; <code>Password:</code> <strong>Demodemo123</strong>
 </p>
