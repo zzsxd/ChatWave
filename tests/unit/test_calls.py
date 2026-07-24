@@ -1,10 +1,13 @@
+import asyncio
 import base64
 import hashlib
 import hmac
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
 
+import services.calls as calls_service
 from routes.calls import build_ice_server_config
 from schemas.calls import (
     AcceptCall,
@@ -112,3 +115,62 @@ def test_build_ice_server_config_uses_short_lived_signed_credentials(monkeypatch
 def test_reject_invalid_call_signals(payload):
     with pytest.raises(ValidationError):
         parse_call_signal(payload)
+
+
+async def test_successful_start_is_tracked_by_websocket_session(monkeypatch):
+    tracked_calls: set[int] = set()
+    start = AsyncMock(return_value=73)
+    monkeypatch.setattr(calls_service, "_handle_start", start)
+
+    await calls_service.handle_call_signal(
+        11,
+        {
+            "type": "call.start",
+            "conversation_id": 42,
+            "media": "audio",
+            "offer": {"type": "offer", "sdp": "v=0"},
+        },
+        AsyncMock(),
+        tracked_calls,
+    )
+
+    assert tracked_calls == {73}
+
+
+async def test_signaling_disconnect_cleans_up_tracked_calls(monkeypatch):
+    class FakePubSub:
+        async def subscribe(self, _channel):
+            return None
+
+        async def unsubscribe(self, _channel):
+            return None
+
+        async def aclose(self):
+            return None
+
+        async def listen(self):
+            while True:
+                await asyncio.sleep(60)
+                yield {"type": "noop"}
+
+    class FakeRedis:
+        def pubsub(self):
+            return FakePubSub()
+
+    websocket = AsyncMock()
+    websocket.receive_json.side_effect = [
+        {"type": "call.heartbeat", "call_id": 91},
+        RuntimeError("socket closed"),
+    ]
+
+    async def track_call(_user_id, _payload, _websocket, active_call_ids):
+        active_call_ids.add(91)
+
+    cleanup = AsyncMock(return_value=True)
+    monkeypatch.setattr(calls_service, "redis_client", FakeRedis())
+    monkeypatch.setattr(calls_service, "handle_call_signal", track_call)
+    monkeypatch.setattr(calls_service, "disconnect_call", cleanup)
+
+    await calls_service.calls_listener(11, websocket)
+
+    cleanup.assert_awaited_once_with(11, 91)

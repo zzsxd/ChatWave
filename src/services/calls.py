@@ -205,10 +205,10 @@ async def _handle_start(
     current_user_id: int,
     signal: StartCall,
     websocket: WebSocket,
-) -> None:
+) -> int | None:
     if signal.offer.type != "offer":
         await _send_error(websocket, "invalid_offer", "Expected an SDP offer")
-        return
+        return None
 
     await validate_user_in_chat(current_user_id, signal.conversation_id)
     members = await select_conversation_members(signal.conversation_id)
@@ -219,13 +219,13 @@ async def _handle_start(
             "unsupported_conversation",
             "Only one-to-one calls are supported",
         )
-        return
+        return None
 
     lock_key = f"call:conversation:{signal.conversation_id}:active"
     lock_acquired = await _acquire_call_lock(signal.conversation_id)
     if not lock_acquired:
         await _send_error(websocket, "busy", "This conversation already has a call")
-        return
+        return None
 
     try:
         call_id = await insert_call(signal.conversation_id, current_user_id)
@@ -254,6 +254,7 @@ async def _handle_start(
                 "media": signal.media,
             }
         )
+        return call_id
     except Exception:
         await redis_client.delete(lock_key)
         raise
@@ -263,20 +264,20 @@ async def _handle_accept(
     current_user_id: int,
     signal: AcceptCall,
     websocket: WebSocket,
-) -> None:
+) -> bool:
     if signal.answer.type != "answer":
         await _send_error(websocket, "invalid_answer", "Expected an SDP answer")
-        return
+        return False
     call, recipient_id = await _resolve_call(current_user_id, signal.call_id)
     if call is None or recipient_id is None or call.caller_id == current_user_id:
         await _send_error(websocket, "call_not_found", "Call is not available")
-        return
+        return False
     active_call = await redis_client.get(
         f"call:conversation:{call.conversation_id}:active"
     )
     if active_call is None or active_call.decode() != str(call.id):
         await _send_error(websocket, "call_expired", "Call has expired")
-        return
+        return False
     updated = await transition_call_status(
         call.id,
         [CallsStatus.PENDING],
@@ -284,7 +285,7 @@ async def _handle_accept(
     )
     if updated is None:
         await _send_error(websocket, "invalid_state", "Call is no longer ringing")
-        return
+        return False
     await redis_client.expire(
         f"call:conversation:{call.conversation_id}:active",
         ACTIVE_CALL_LOCK_SECONDS,
@@ -297,6 +298,7 @@ async def _handle_accept(
             "answer": signal.answer.model_dump(),
         },
     )
+    return True
 
 
 async def _handle_candidate(
@@ -400,7 +402,7 @@ async def _handle_group_start(
     current_user_id: int,
     signal: StartGroupCall,
     websocket: WebSocket,
-) -> None:
+) -> int | None:
     await validate_user_in_group(current_user_id, signal.conversation_id)
     members = await select_conversation_members(signal.conversation_id)
     participant_ids = [member.user_id for member in members]
@@ -410,17 +412,17 @@ async def _handle_group_start(
             "not_enough_participants",
             "Add at least one participant before starting a group call",
         )
-        return
+        return None
     if len(participant_ids) > GROUP_CALL_MAX_PARTICIPANTS:
         await _send_error(
             websocket,
             "group_too_large",
             f"Group calls support up to {GROUP_CALL_MAX_PARTICIPANTS} participants",
         )
-        return
+        return None
     if not await _acquire_call_lock(signal.conversation_id):
         await _send_error(websocket, "busy", "This conversation already has a call")
-        return
+        return None
 
     lock_key = f"call:conversation:{signal.conversation_id}:active"
     try:
@@ -463,6 +465,7 @@ async def _handle_group_start(
                 "max_participants": GROUP_CALL_MAX_PARTICIPANTS,
             }
         )
+        return call_id
     except Exception:
         await redis_client.delete(
             lock_key,
@@ -476,7 +479,7 @@ async def _handle_group_join(
     current_user_id: int,
     signal: JoinGroupCall,
     websocket: WebSocket,
-) -> None:
+) -> bool:
     call = await _resolve_group_call(
         current_user_id,
         signal.call_id,
@@ -484,11 +487,11 @@ async def _handle_group_join(
     )
     if call is None:
         await _send_error(websocket, "call_not_found", "Group call is not available")
-        return
+        return False
     participants = await _group_participants(call.id)
     if len(participants) >= GROUP_CALL_MAX_PARTICIPANTS:
         await _send_error(websocket, "call_full", "The group call is full")
-        return
+        return False
     existing = sorted(participants - {current_user_id})
     await redis_client.sadd(_group_participants_key(call.id), current_user_id)
     await _refresh_group_call(call.id, call.conversation_id)
@@ -508,6 +511,7 @@ async def _handle_group_join(
                 "user_id": current_user_id,
             },
         )
+    return True
 
 
 async def _handle_group_relay(
@@ -608,26 +612,27 @@ async def _handle_group_leave(
     current_user_id: int,
     signal: LeaveGroupCall,
     websocket: WebSocket,
-) -> None:
+) -> bool:
     if not await _leave_group_call(current_user_id, signal.call_id):
         # Declining an invitation before joining is intentionally idempotent.
         if not await _is_group_call(signal.call_id):
             await _send_error(websocket, "call_not_found", "Group call is not active")
-            return
+            return False
     await websocket.send_json(
         {"type": "call.group_left", "call_id": signal.call_id}
     )
+    return True
 
 
 async def _handle_action(
     current_user_id: int,
     signal: CallAction,
     websocket: WebSocket,
-) -> None:
+) -> bool:
     call, recipient_id = await _resolve_call(current_user_id, signal.call_id)
     if call is None or recipient_id is None:
         await _send_error(websocket, "call_not_found", "Call is not available")
-        return
+        return False
 
     if signal.type == "call.reject":
         valid_actor = call.caller_id != current_user_id
@@ -644,11 +649,11 @@ async def _handle_action(
 
     if not valid_actor:
         await _send_error(websocket, "forbidden_action", "Action is not allowed")
-        return
+        return False
     updated = await transition_call_status(call.id, from_statuses, to_status)
     if updated is None:
         await _send_error(websocket, "invalid_state", "Call is already finished")
-        return
+        return False
     await _release_call_lock(call.conversation_id, call.id)
     await _record_call_history(
         updated,
@@ -662,6 +667,7 @@ async def _handle_action(
         recipient_id,
         {"type": signal.type, "call_id": call.id},
     )
+    return True
 
 
 async def disconnect_call(current_user_id: int, call_id: int) -> bool:
@@ -706,6 +712,7 @@ async def handle_call_signal(
     current_user_id: int,
     payload: object,
     websocket: WebSocket,
+    active_call_ids: set[int] | None = None,
 ) -> None:
     try:
         signal = parse_call_signal(payload)
@@ -719,9 +726,13 @@ async def handle_call_signal(
 
     try:
         if isinstance(signal, StartGroupCall):
-            await _handle_group_start(current_user_id, signal, websocket)
+            call_id = await _handle_group_start(current_user_id, signal, websocket)
+            if call_id is not None and active_call_ids is not None:
+                active_call_ids.add(call_id)
         elif isinstance(signal, JoinGroupCall):
-            await _handle_group_join(current_user_id, signal, websocket)
+            joined = await _handle_group_join(current_user_id, signal, websocket)
+            if joined and active_call_ids is not None:
+                active_call_ids.add(signal.call_id)
         elif isinstance(
             signal,
             (GroupCallOffer, GroupCallAnswer, GroupCallCandidate),
@@ -730,11 +741,17 @@ async def handle_call_signal(
         elif isinstance(signal, GroupCallMediaState):
             await _handle_group_media_state(current_user_id, signal, websocket)
         elif isinstance(signal, LeaveGroupCall):
-            await _handle_group_leave(current_user_id, signal, websocket)
+            left = await _handle_group_leave(current_user_id, signal, websocket)
+            if left and active_call_ids is not None:
+                active_call_ids.discard(signal.call_id)
         elif isinstance(signal, StartCall):
-            await _handle_start(current_user_id, signal, websocket)
+            call_id = await _handle_start(current_user_id, signal, websocket)
+            if call_id is not None and active_call_ids is not None:
+                active_call_ids.add(call_id)
         elif isinstance(signal, AcceptCall):
-            await _handle_accept(current_user_id, signal, websocket)
+            accepted = await _handle_accept(current_user_id, signal, websocket)
+            if accepted and active_call_ids is not None:
+                active_call_ids.add(signal.call_id)
         elif isinstance(signal, CallCandidate):
             await _handle_candidate(current_user_id, signal, websocket)
         elif isinstance(signal, CallHeartbeat):
@@ -742,7 +759,9 @@ async def handle_call_signal(
         elif isinstance(signal, CallMediaState):
             await _handle_media_state(current_user_id, signal, websocket)
         else:
-            await _handle_action(current_user_id, signal, websocket)
+            finished = await _handle_action(current_user_id, signal, websocket)
+            if finished and active_call_ids is not None:
+                active_call_ids.discard(signal.call_id)
     except (
         ConversationNotFoundError,
         IsNotAChatError,
@@ -769,18 +788,31 @@ async def handle_call_signal(
 async def calls_listener(current_user_id: int, websocket: WebSocket) -> None:
     pubsub = redis_client.pubsub()
     channel = f"user:call_events:{current_user_id}"
+    active_call_ids: set[int] = set()
     await pubsub.subscribe(channel)
 
     async def receive_signals() -> None:
         while True:
             payload = await websocket.receive_json()
-            await handle_call_signal(current_user_id, payload, websocket)
+            await handle_call_signal(
+                current_user_id,
+                payload,
+                websocket,
+                active_call_ids,
+            )
 
     async def forward_signals() -> None:
         async for message in pubsub.listen():
             if message["type"] != "message":
                 continue
-            await websocket.send_json(json.loads(message["data"].decode()))
+            payload = json.loads(message["data"].decode())
+            if payload.get("type") in {
+                "call.reject",
+                "call.cancel",
+                "call.end",
+            }:
+                active_call_ids.discard(int(payload["call_id"]))
+            await websocket.send_json(payload)
 
     import asyncio
 
@@ -796,5 +828,20 @@ async def calls_listener(current_user_id: int, websocket: WebSocket) -> None:
         await asyncio.gather(*pending, return_exceptions=True)
         await asyncio.gather(receiver, forwarder, return_exceptions=True)
     finally:
+        cleanup_call_ids = tuple(active_call_ids)
+        cleanup_results = await asyncio.gather(
+            *(
+                disconnect_call(current_user_id, call_id)
+                for call_id in cleanup_call_ids
+            ),
+            return_exceptions=True,
+        )
+        for call_id, result in zip(cleanup_call_ids, cleanup_results):
+            if isinstance(result, Exception):
+                logger.error(
+                    "Unable to clean up call %s after signaling disconnect: %r",
+                    call_id,
+                    result,
+                )
         await pubsub.unsubscribe(channel)
         await pubsub.aclose()

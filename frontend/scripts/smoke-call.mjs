@@ -376,8 +376,48 @@ try {
   ) {
     throw new Error("Finished call was not recorded in message history");
   }
+
+  firstSocket.socket.send(
+    JSON.stringify({
+      type: "call.start",
+      conversation_id: conversation.id,
+      media: "audio",
+      offer: { type: "offer", sdp: "v=0\r\ns=Disconnect cleanup offer\r\n" },
+    }),
+  );
+  const [orphanedStarted, orphanedIncoming] = await Promise.all([
+    firstSocket.wait("call.started"),
+    secondSocket.wait("call.incoming"),
+  ]);
+  if (orphanedStarted.call_id !== orphanedIncoming.call_id) {
+    throw new Error("Disconnect cleanup call IDs do not match");
+  }
+  firstSocket.socket.close();
+  await secondSocket.wait("call.end");
+
+  firstSocket = await connect(first.token);
+  firstSocket.socket.send(
+    JSON.stringify({
+      type: "call.start",
+      conversation_id: conversation.id,
+      media: "audio",
+      offer: { type: "offer", sdp: "v=0\r\ns=Immediate retry offer\r\n" },
+    }),
+  );
+  const [retryStarted, retryIncoming] = await Promise.all([
+    firstSocket.wait("call.started"),
+    secondSocket.wait("call.incoming"),
+  ]);
+  if (retryStarted.call_id !== retryIncoming.call_id) {
+    throw new Error("Immediate retry call IDs do not match");
+  }
+  firstSocket.socket.send(
+    JSON.stringify({ type: "call.cancel", call_id: retryStarted.call_id }),
+  );
+  await secondSocket.wait("call.cancel");
+
   console.log(
-    "Group members, call signaling, history, bulk deletion and ICE configuration: OK",
+    "Group members, call signaling, disconnect cleanup, immediate retry, history, bulk deletion and ICE configuration: OK",
   );
 } finally {
   firstSocket?.socket.close();
