@@ -6,7 +6,15 @@ from utilities import MediaPatches
 
 
 async def handle_unread_messages_changes(user_id: str):
-    await redis_client.publish("user:unread_messages_events", user_id)
+    should_publish = await redis_client.set(
+        f"events:unread:{user_id}",
+        "1",
+        ex=1,
+        nx=True,
+    )
+    if not should_publish:
+        return
+    await redis_client.publish(f"user:unread_messages_events:{user_id}", user_id)
 
 
 async def handle_recipients_change(payload: str):

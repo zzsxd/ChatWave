@@ -1,0 +1,208 @@
+"use client";
+
+import { FormEvent, useState } from "react";
+import { Search, UserRoundPlus, UsersRound, X } from "lucide-react";
+import { ApiPublicUser, chatWaveApi } from "../api";
+
+type CreationMode = "direct" | "group";
+
+export function NewConversationModal({
+  currentUserId,
+  onClose,
+  onCreated,
+}: {
+  currentUserId: number;
+  onClose: () => void;
+  onCreated: (conversationId: number) => void;
+}) {
+  const [mode, setMode] = useState<CreationMode>("direct");
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<ApiPublicUser[]>([]);
+  const [groupName, setGroupName] = useState("");
+  const [groupDescription, setGroupDescription] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [creatingId, setCreatingId] = useState<number | null>(null);
+  const [error, setError] = useState("");
+  const [searched, setSearched] = useState(false);
+
+  const search = async (event: FormEvent) => {
+    event.preventDefault();
+    const value = query.trim();
+    if (value.length < 3) return;
+    setLoading(true);
+    setError("");
+    try {
+      const users = await chatWaveApi.searchUsers(value);
+      setResults(users.filter((user) => user.id !== currentUserId));
+      setSearched(true);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Не удалось найти пользователей",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const startDirect = async (user: ApiPublicUser) => {
+    setCreatingId(user.id);
+    setError("");
+    try {
+      const conversation = await chatWaveApi.createPrivateConversation(user.id);
+      onCreated(conversation.id);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Не удалось создать диалог",
+      );
+    } finally {
+      setCreatingId(null);
+    }
+  };
+
+  const createGroup = async (event: FormEvent) => {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const conversation = await chatWaveApi.createGroup(
+        groupName.trim(),
+        groupDescription,
+      );
+      onCreated(conversation.id);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Не удалось создать группу",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="new-conversation-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="new-conversation-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <button className="modal-close" onClick={onClose} aria-label="Закрыть">
+          <X size={18} />
+        </button>
+        <span className="eyebrow">Новое общение</span>
+        <h2 id="new-conversation-title">
+          {mode === "direct" ? "Найти человека" : "Создать группу"}
+        </h2>
+        <p>
+          {mode === "direct"
+            ? "Поиск выполняется по отображаемому имени."
+            : "Участников можно добавить после создания пространства."}
+        </p>
+
+        <div className="creation-tabs" role="tablist">
+          <button
+            type="button"
+            className={mode === "direct" ? "active" : ""}
+            onClick={() => {
+              setMode("direct");
+              setError("");
+            }}
+          >
+            <UserRoundPlus size={17} /> Личный чат
+          </button>
+          <button
+            type="button"
+            className={mode === "group" ? "active" : ""}
+            onClick={() => {
+              setMode("group");
+              setError("");
+            }}
+          >
+            <UsersRound size={17} /> Группа
+          </button>
+        </div>
+
+        {mode === "direct" ? (
+          <>
+            <form className="people-search-form" onSubmit={search}>
+              <Search size={17} />
+              <input
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Введите минимум 3 символа"
+                minLength={3}
+                maxLength={128}
+                required
+              />
+              <button disabled={loading || query.trim().length < 3}>
+                {loading ? "Ищем…" : "Найти"}
+              </button>
+            </form>
+            <div className="people-results" aria-live="polite">
+              {results.map((user) => (
+                <button
+                  key={user.id}
+                  className="people-result"
+                  onClick={() => void startDirect(user)}
+                  disabled={creatingId !== null}
+                >
+                  <span className="avatar avatar-blue">
+                    {user.nickname.slice(0, 2).toUpperCase()}
+                  </span>
+                  <span>
+                    <strong>{user.nickname}</strong>
+                    <small>{user.bio || "Пользователь ChatWave"}</small>
+                  </span>
+                  <b>{creatingId === user.id ? "Создаём…" : "Написать"}</b>
+                </button>
+              ))}
+              {searched && !results.length && !loading && (
+                <div className="people-empty">
+                  <Search size={23} />
+                  <strong>Никого не нашли</strong>
+                  <span>Проверьте имя или попробуйте другой запрос.</span>
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <form className="group-create-form" onSubmit={createGroup}>
+            <label>
+              Название
+              <input
+                autoFocus
+                value={groupName}
+                onChange={(event) => setGroupName(event.target.value)}
+                placeholder="Команда продукта"
+                minLength={1}
+                maxLength={64}
+                required
+              />
+            </label>
+            <label>
+              Описание
+              <textarea
+                value={groupDescription}
+                onChange={(event) => setGroupDescription(event.target.value)}
+                placeholder="О чём это пространство"
+                maxLength={256}
+                rows={3}
+              />
+            </label>
+            <button className="primary-button" disabled={loading}>
+              <UsersRound size={18} />
+              {loading ? "Создаём…" : "Создать группу"}
+            </button>
+          </form>
+        )}
+        {error && (
+          <div className="auth-error" role="alert">
+            {error}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}

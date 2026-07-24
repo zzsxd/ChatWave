@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, Index, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import OrmBase
@@ -23,11 +23,25 @@ class UnreadMessages(OrmBase):
         nullable=True
     )
 
-    __table_args = (
-        UniqueConstraint(
+    __table_args__ = (
+        CheckConstraint(
+            "(message_id IS NULL) <> (call_id IS NULL)",
+            name="ck_unread_exactly_one_entity",
+        ),
+        Index(
+            "uq_unread_message_recipient",
             "conversation_id",
             "user_id",
             "message_id",
+            unique=True,
+            postgresql_where=text("message_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_unread_call_recipient",
+            "conversation_id",
+            "user_id",
             "call_id",
-            name="unread_messages_conversation_id_user_id_message_id_call_id"),
+            unique=True,
+            postgresql_where=text("call_id IS NOT NULL"),
+        ),
     )

@@ -1,16 +1,11 @@
-from validators.conversations import conversation_is_existed
 from repository import (
     is_message_exists,
     select_message,
     select_messages,
-    select_conversation_member_role
 )
 from utilities import (
     MessageNotFound,
     AccessDeniedError,
-    ConversationTypes,
-    ConversationMemberRoles,
-    UserNotInConversation
 )
 from validators import validate_user_in_conversation, validate_user_in_conversations
 
@@ -59,22 +54,7 @@ async def validate_user_have_access_to_messages(user_id: int, messages_ids: list
 
 
 async def validate_user_can_manage_messages(user_id: int, messages_ids: list[int]) -> None:
-    await messages_is_existed(messages_ids=messages_ids)
-
-    messages_objs = await select_messages(messages_ids=messages_ids)
-
-    for message_obj in messages_objs:
-        await conversation_is_existed(conversation_id=message_obj.conversation_id)
-
-        conversation_type = message_obj.conversation.type
-        user_role = await select_conversation_member_role(
-            user_id=user_id,
-            conversation_id=message_obj.conversation_id
-        )
-
-        if user_role is None:
-            raise UserNotInConversation(user_id=user_id, conversation_id=message_obj.conversation_id)
-
-        if conversation_type == ConversationTypes.GROUP:
-            if user_role == ConversationMemberRoles.MEMBER and message_obj.sender_id != user_id:
-                raise AccessDeniedError()
+    await validate_user_have_access_to_messages(
+        user_id=user_id,
+        messages_ids=messages_ids,
+    )

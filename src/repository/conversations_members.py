@@ -1,5 +1,5 @@
 from sqlalchemy import select, delete, and_, func, update, asc, insert
-from models import ConversationMembers
+from models import ConversationMembers, Messages, UnreadMessages
 from utilities import ConversationMemberRoles
 from database import session
 
@@ -103,3 +103,41 @@ async def select_conversation_admin_members(conversation_id: int) -> list[Conver
         )
         result = await cursor.execute(query)
         return result.scalars().all()
+
+
+async def remove_conversation_members_atomic(
+    conversation_id: int,
+    members_ids: list[int],
+    delete_message_member_ids: list[int],
+) -> list[str]:
+    async with session() as cursor:
+        media_names: list[str] = []
+        if delete_message_member_ids:
+            result = await cursor.execute(
+                select(Messages.file_content_name).filter(
+                    Messages.conversation_id == conversation_id,
+                    Messages.sender_id.in_(delete_message_member_ids),
+                    Messages.file_content_name.is_not(None),
+                )
+            )
+            media_names = list(result.scalars().all())
+            await cursor.execute(
+                delete(Messages).filter(
+                    Messages.conversation_id == conversation_id,
+                    Messages.sender_id.in_(delete_message_member_ids),
+                )
+            )
+        await cursor.execute(
+            delete(UnreadMessages).filter(
+                UnreadMessages.conversation_id == conversation_id,
+                UnreadMessages.user_id.in_(members_ids),
+            )
+        )
+        await cursor.execute(
+            delete(ConversationMembers).filter(
+                ConversationMembers.conversation_id == conversation_id,
+                ConversationMembers.user_id.in_(members_ids),
+            )
+        )
+        await cursor.commit()
+        return media_names

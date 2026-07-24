@@ -13,6 +13,8 @@ def validate_password(value: str) -> str | None:
         raise ValueError('Password must contain at least one uppercase letter')
     if not re.search(r'[0-9]', value):
         raise ValueError('Password must contain at least one digit')
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("Password must not exceed 72 UTF-8 bytes")
 
     return value
 

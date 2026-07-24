@@ -1,13 +1,17 @@
 from sqlalchemy.exc import IntegrityError
 from schemas import CreateUser, CreateUserDB
 from repository import select_user_by_username, insert_user
-from utilities import Hash, JWT, UserNotFoundError, InvalidPasswordError, UserAlreadyExists
+from utilities import Hash, JWT, UserNotFoundError, UserAlreadyExists
+
+
+DUMMY_PASSWORD_HASH = Hash.hash_password("ChatWaveDummyPassword123")
 
 
 async def get_access_token(username: str, password: str) -> str:
-    user_data = await select_user_by_username(username)
+    user_data = await select_user_by_username(username.strip().lower())
 
     if not user_data:
+        Hash.verify_password(plain_password=password, hashed_password=DUMMY_PASSWORD_HASH)
         raise UserNotFoundError()
 
     user_id = user_data[0]

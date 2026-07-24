@@ -1,0 +1,12 @@
+.*
+!.gitignore
+__pycache__/
+**/__pycache__/
+*.py[cod]
+**/*.py[cod]
+**/._*
+tests/
+README/
+assets/
+config.yml
+.env

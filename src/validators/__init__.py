@@ -5,6 +5,8 @@ from .conversations import (
     validate_user_in_conversation,
     validate_user_in_conversations,
     validate_user_can_manage_conversation,
+    validate_user_can_delete_conversation,
+    validate_user_can_delete_all_messages,
     validate_user_in_groups,
     validate_users_in_same_chat,
     conversation_is_group,

@@ -60,7 +60,7 @@ class InvalidPasswordError(Exception):
 class UserAlreadyExists(Exception):
     def __init__(self, user_id: int | None = None):
         if user_id is None:
-            detail = f"User already exists"
+            detail = "User already exists"
         else:
             detail = f"User with id ({user_id}) already exists"
         super().__init__(detail)
@@ -111,7 +111,7 @@ class ImageCorrupted(Exception):
 class ChatAlreadyExists(Exception):
     def __init__(self, chat_id: int | None = None):
         if chat_id is None:
-            detail = f"Chat already exists"
+            detail = "Chat already exists"
         else:
             detail = f"Chat with id ({chat_id}) already exists"
         super().__init__(detail)
@@ -119,7 +119,7 @@ class ChatAlreadyExists(Exception):
 
 class SameUsersIds(Exception):
     def __init__(self):
-        detail = f"You cant perform this operation with your self"
+        detail = "You cant perform this operation with your self"
         super().__init__(detail)
 
 
@@ -169,3 +169,8 @@ class UnreadMessageAlreadyExists(Exception):
         else:
             detail = f"Unread message already exists for user with id ({user_id})"
         super().__init__(detail)
+
+
+class StorageQuotaExceeded(Exception):
+    def __init__(self):
+        super().__init__("User media storage quota exceeded")

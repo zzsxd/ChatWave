@@ -1,10 +1,17 @@
 from fastapi import APIRouter, Depends, status, UploadFile, File, Query, Body, Form
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from typing import Annotated, Optional
+from uuid import UUID
 
 from dependencies import verify_token, update_last_online
 from schemas.unread_messages import AddUnreadMessages
-from utilities import EntitiesTypes
+from utilities import (
+    EntitiesTypes,
+    MessagesTypes,
+    generic_settings,
+    read_upload_limited,
+)
 from validators import verify_current_user_is_existed
 from services import (
     create_private_conversation,
@@ -23,7 +30,9 @@ from services import (
     create_media_message,
     create_text_message,
     add_unread_messages,
-    fetch_last_message
+    fetch_last_message,
+    fetch_conversation_media,
+    fetch_pinned_messages,
 )
 from schemas import (
     CreateGroup,
@@ -51,15 +60,50 @@ async def get_messages_from_conversation(
         current_user_id: Annotated[int, Depends(verify_token)],
         conversation_id: int,
         limit: int = Query(10, ge=1, le=1000),
-        offset: int = Query(0, ge=0),
+        offset: int = Query(0, ge=0, le=1_000_000),
+        before_id: int | None = Query(None, ge=1, le=2_147_483_647),
 ):
     messages_objs = await fetch_messages(
         sender_id=current_user_id,
         conversation_id=conversation_id,
         limit=limit,
-        offset=offset
+        offset=offset,
+        before_id=before_id,
     )
     return messages_objs
+
+
+@conversations_router.get(
+    "/{conversation_id}/media",
+    status_code=status.HTTP_200_OK,
+    response_model=list[GetMessage],
+)
+async def get_conversation_media(
+        current_user_id: Annotated[int, Depends(verify_token)],
+        conversation_id: int,
+        kind: str = Query("media", pattern="^(media|files)$"),
+        limit: int = Query(100, ge=1, le=200),
+        offset: int = Query(0, ge=0, le=1_000_000),
+):
+    return await fetch_conversation_media(
+        current_user_id,
+        conversation_id,
+        kind,
+        limit,
+        offset,
+    )
+
+
+@conversations_router.get(
+    "/{conversation_id}/pinned",
+    status_code=status.HTTP_200_OK,
+    response_model=list[GetMessage],
+)
+async def get_pinned_messages(
+        current_user_id: Annotated[int, Depends(verify_token)],
+        conversation_id: int,
+):
+    return await fetch_pinned_messages(current_user_id, conversation_id)
 
 
 @conversations_router.get("/{conversation_id}/messages/last", status_code=status.HTTP_200_OK, response_model=GetMessage)
@@ -110,13 +154,17 @@ async def get_groups_avatars(
         conversations_ids=conversation_id.conversations_ids
     )
     zip_obj = await FileManager().archive_files(avatars_paths)
-    return StreamingResponse(zip_obj, media_type="application/zip")
+    return StreamingResponse(
+        zip_obj,
+        media_type="application/zip",
+        background=BackgroundTask(zip_obj.close),
+    )
 
 
 @conversations_router.post("/chat", status_code=status.HTTP_200_OK, response_model=GetConversations)
 async def create_chat(
         current_user_id: Annotated[int, Depends(verify_token)],
-        recipient_id: int
+        recipient_id: int = Query(ge=1, le=2_147_483_647),
 ):
     new_conversation = await create_private_conversation(user_id=current_user_id, recipient_id=recipient_id)
     return new_conversation
@@ -149,7 +197,9 @@ async def send_text_message(
     new_message_obj = await create_text_message(
         sender_id=current_user_id,
         conversation_id=conversation_id,
-        content=request.content
+        content=request.content,
+        client_message_id=request.client_message_id,
+        reply_to_id=request.reply_to_id,
     )
     return new_message_obj
 
@@ -160,14 +210,29 @@ async def send_media_message(
         conversation_id: int,
         is_voice_message: bool = False,
         caption: Optional[str] = Form(None),
+        client_message_id: UUID | None = Form(None),
+        reply_to_id: int | None = Form(None),
         file: UploadFile = File()
 ):
+    detected_type = await FileManager().detect_file_type(file_type=file.content_type)
+    upload_limits = {
+        MessagesTypes.IMAGE: generic_settings.MAX_UPLOAD_IMAGE_SIZE,
+        MessagesTypes.VIDEO: generic_settings.MAX_UPLOAD_VIDEO_SIZE,
+        MessagesTypes.AUDIO: generic_settings.MAX_UPLOAD_AUDIO_SIZE,
+        MessagesTypes.FILE: generic_settings.MAX_UPLOAD_FILE_SIZE,
+    }
     new_message_obj = CreateMediaMessage(
-        file=file.file.read(),
+        file=await read_upload_limited(
+            file,
+            upload_limits[detected_type],
+            detected_type.value,
+        ),
         file_name=file.filename,
         file_type=file.content_type,
         caption=caption,
-        is_voice_message=is_voice_message
+        is_voice_message=is_voice_message,
+        client_message_id=client_message_id,
+        reply_to_id=reply_to_id,
     )
     new_message_obj = await create_media_message(
         sender_id=current_user_id,
@@ -183,13 +248,13 @@ async def create_unread_messages(
         conversation_id: int,
         entity_id: int,
         entity_type: EntitiesTypes = Query(),
-        users_ids: list[int] = Query()
+        users: UsersIds = Query()
 ):
     entity_data = AddUnreadMessages(**{f"{entity_type.value}_id": entity_id})
     await add_unread_messages(
         user_id=current_user_id,
         conversation_id=conversation_id,
-        users_ids=users_ids,
+        users_ids=users.users_ids,
         entity_data=entity_data
     )
 
@@ -201,7 +266,11 @@ async def update_group_avatar(
         avatar: UploadFile = File()
 ):
     avatar_obj = Avatar(
-        file=await avatar.read(),
+        file=await read_upload_limited(
+            avatar,
+            generic_settings.MAX_UPLOAD_IMAGE_SIZE,
+            "image",
+        ),
         file_name=avatar.filename,
         content_type=avatar.content_type
     )
@@ -232,7 +301,10 @@ async def delete_group_avatar(
 async def delete_members_from_group(
         current_user_id: Annotated[int, Depends(verify_token)],
         group_id: int,
-        request: list[DeleteGroupMembers] = Body()
+        request: list[DeleteGroupMembers] = Body(
+            min_length=1,
+            max_length=generic_settings.MAX_ITEMS_PER_REQUEST,
+        )
 ):
     await remove_group_members(
         user_id=current_user_id,

@@ -3,6 +3,14 @@ from .users import (
     select_user_by_username,
     insert_user,
     select_user,
+    select_user_avatar_type,
+    insert_user_avatar,
+    set_user_avatar,
+    select_user_avatar_history,
+    select_owned_user_avatar,
+    select_user_avatar_names,
+    select_user_with_conversations,
+    select_user_with_unread,
     select_users,
     update_user,
     select_users_by_nickname,
@@ -15,9 +23,12 @@ from .users import (
 )
 from .conversations import (
     select_conversation,
+    create_private_conversation_atomic,
+    create_group_conversation_atomic,
     select_conversation_by_id,
     select_conversations,
     update_conversation,
+    update_conversation_creator,
     is_conversation_exists,
     select_conversation_type,
     delete_conversation_avatar,
@@ -31,14 +42,17 @@ from .conversations_members import (
     select_conversation_members_quantity,
     select_conversation_members,
     select_conversation_admin_members,
-    update_conversation_member
+    update_conversation_member,
+    remove_conversation_members_atomic,
 )
 from .messages import (
-    insert_text_message,
-    insert_empty_message,
-    insert_media_message,
+    insert_text_message_with_notifications,
+    insert_call_history_message,
+    reserve_message_id,
+    insert_media_message_with_notifications,
     is_message_exists,
     select_message,
+    select_message_by_client_id,
     update_message,
     select_messages,
     select_filtered_messages,
@@ -46,13 +60,39 @@ from .messages import (
     delete_messages,
     delete_sender_messages,
     select_messages_by_content,
+    select_conversation_messages_by_types,
+    insert_pinned_message,
+    delete_pinned_message,
+    select_pinned_messages,
     select_message_status,
     update_message_status,
-    select_last_message
+    select_last_message,
+    select_conversation_media_names,
+    select_sender_media_names,
 )
 from .unread_messages import (
     select_unread_messages,
     is_unread_messages_exists,
     insert_unread_messages,
+    insert_message_notifications,
     delete_unread_messages
+)
+from .message_receipts import (
+    upsert_message_receipts,
+    update_message_receipt,
+    select_message_receipt_status,
+    select_message_receipts_statuses,
+    mark_message_receipts_delivered,
+    mark_message_receipts_read,
+    select_receipts_for_messages,
+)
+from .message_reactions import (
+    select_message_reactions,
+    toggle_message_reaction,
+)
+from .calls import (
+    insert_call,
+    select_call,
+    select_call_participants,
+    transition_call_status,
 )

@@ -1,2 +1,12 @@
 .venv/
 .idea/
+.env
+.env.*
+!.env.example
+config.yml
+__pycache__/
+*.py[cod]
+._*
+.coverage
+.pytest_cache/
+.ruff_cache/

@@ -25,13 +25,14 @@ This repository contains only the **backend**, built with **Python 3.11** and **
 - 💬 Personal & group chats
 - 🎙️ Media messages (voice, images, files)
 - ⚡ Real-time message updates via WebSocket
+- 📞 WebRTC audio & video calls (1-on-1)
 - 🧹 Permanent deletion of messages
 
 ## 🛣️ Roadmap
 
 - 🌐 Web frontend (already available, but still in active development: [chatwave-web](https://github.com/lifufkd/chatwave-web))
 - 🎥 Video messages (real-time)
-- 📞 Audio & video calls (1-on-1 and group)
+- 📞 Group audio & video calls
 
 ## 🚀 Getting Started
 
@@ -76,6 +77,10 @@ cd ChatWave
 docker-compose up -d
 ```
 
+For safety, this mode binds the API to `127.0.0.1` by default. Use it behind
+a local reverse proxy. Set `API_BIND_ADDRESS=0.0.0.0` only on a trusted network;
+credentials and messages must not be sent over public plain HTTP.
+
 
 #### 2. HTTPS (ssl)
 ```bash
@@ -101,24 +106,45 @@ SSL_CERTS_FOLDER=<PATH_TO_FOLDER_WITH_CERTS>
 SSL_CERT_PATH=/cert/cert.pem
 SSL_CERT_KEY=/cert/cert.key
  
-# Optionaly
+# Required in production
+REDIS_PASSWORD=<PASSWORD>
+JWT_SECRET_KEY=<AT-LEAST-64-RANDOM-CHARACTERS>
+API_CORS_ALLOW_ORIGINS=["https://chat.example.com"]
+
+# Optional
 DB_DATABASE=<DATABASE-NAME>
 DB_PORT=<PORT>
 DB_SCHEMA=chatwave
 REDIS_PORT=<PORT>
 REDIS_DATABASE=0
 REDIS_USER=<USER>
-REDIS_PASSWORD=<PASSWORD>
-JWT_SECRET_KEY=09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7 # 256 bit random string
-JWT_ACCESS_TOKEN_EXPIRES=1209600 # Token expire time in seconds
+JWT_ACCESS_TOKEN_EXPIRES=900 # Access token lifetime in seconds
 JWT_ALGORITHM=HS256
 CHUNK_SIZE=16 # Decimal value in MB for streaming video
-MAX_UPLOAD_IMAGE_SIZE=30 # Decimal value in MB
-MAX_UPLOAD_VIDEO_SIZE=8192 # Decimal value in MB
-MAX_UPLOAD_AUDIO_SIZE=512 # Decimal value in MB
-MAX_UPLOAD_FILE_SIZE=16384 # Decimal value in MB
+MAX_UPLOAD_IMAGE_SIZE=20 # Decimal value in MB
+MAX_UPLOAD_VIDEO_SIZE=256 # Decimal value in MB
+MAX_UPLOAD_AUDIO_SIZE=64 # Decimal value in MB
+MAX_UPLOAD_FILE_SIZE=128 # Decimal value in MB
+MAX_REQUEST_BODY_SIZE_MB=260 # Includes multipart overhead
 MAX_ITEMS_PER_REQUEST=100 # Decimal value
+RATE_LIMIT_REQUESTS_PER_MINUTE=300
+RATE_LIMIT_LOGIN_PER_MINUTE=10
+RATE_LIMIT_SIGNUP_PER_HOUR=5
+MAX_WEBSOCKETS_PER_USER=5
 ```
+
+Existing deployments should run `alembic upgrade head` before starting the
+updated application. WebSocket clients authenticate with subprotocols
+`["bearer", "<access-token>"]`; tokens in query strings are no longer accepted.
+The compose files now use PostgreSQL 16. Existing PostgreSQL 13 volumes require
+a supported dump/restore or `pg_upgrade` procedure before changing the image.
+
+One-to-one audio and video calls use the authenticated `/calls/ws` signaling
+socket and browser WebRTC. Configure the frontend with
+`NEXT_PUBLIC_CHATWAVE_API_URL`. For reliable production calls, also set
+`NEXT_PUBLIC_CHATWAVE_ICE_SERVERS` to a JSON array containing your STUN and
+authenticated TURN servers; public STUN alone cannot traverse every NAT or
+firewall.
 
 ## ❤️ Contributing
 

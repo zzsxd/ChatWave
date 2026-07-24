@@ -3,6 +3,7 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
+from sqlalchemy.schema import CreateSchema
 
 from alembic import context
 import models
@@ -72,6 +73,14 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        connection.execute(CreateSchema(db_settings.DB_SCHEMA, if_not_exists=True))
+        connection.exec_driver_sql(
+            f'SET search_path TO "{db_settings.DB_SCHEMA}", public'
+        )
+        connection.commit()
+        connection = connection.execution_options(
+            schema_translate_map={"chatwave": db_settings.DB_SCHEMA}
+        )
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

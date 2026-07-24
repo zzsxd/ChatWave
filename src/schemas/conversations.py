@@ -7,11 +7,16 @@ from utilities import ValidateModelNotEmpty, request_limit, ConversationTypes
 
 
 class ConversationsIds(BaseModel):
-    conversations_ids: list[int]
+    conversations_ids: list[Annotated[int, Field(ge=1, le=2_147_483_647)]]
 
     @field_validator('conversations_ids', mode='after')
     def set_limits(cls, values):
-        return request_limit(values)
+        values = request_limit(values)
+        if not values:
+            raise ValueError("At least one conversation id is required")
+        if len(values) != len(set(values)):
+            raise ValueError("Duplicate conversation ids are not allowed")
+        return values
 
 
 class CreateEmptyConversation(BaseModel):
@@ -54,5 +59,5 @@ class GetConversationsWithMembers(GetConversations):
 
 
 class DeleteGroupMembers(BaseModel):
-    user_id: int
+    user_id: Annotated[int, Field(ge=1, le=2_147_483_647)]
     delete_messages: bool

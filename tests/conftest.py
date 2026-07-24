@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 import platform
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 import models # noqa
 from repository import create_schema
@@ -42,5 +42,4 @@ def set_session_for_factories(get_db_session):
 def client() -> [TestClient, None, None]:
     with TestClient(app) as test_client:
         yield test_client
-
 

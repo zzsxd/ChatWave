@@ -2,7 +2,7 @@ from datetime import datetime
 from sqlalchemy import select, insert, update, text, delete
 from sqlalchemy.orm import selectinload
 
-from models import Users, Conversations
+from models import Users, Conversations, UserAvatars
 from database import session
 from schemas import CreateUserDB, UpdateUserDB
 
@@ -44,16 +44,112 @@ async def insert_user(user_data: CreateUserDB) -> None:
 
 async def select_user(user_id: int) -> Users:
     async with session() as cursor:
-        query = (
+        query = select(Users).filter_by(id=user_id)
+        raw_data = await cursor.execute(query)
+        return raw_data.scalar()
+
+
+async def select_user_avatar_type(avatar_name: str) -> str | None:
+    async with session() as cursor:
+        result = await cursor.execute(
+            select(UserAvatars.avatar_type).filter_by(avatar_name=avatar_name)
+        )
+        return result.scalar()
+
+
+async def insert_user_avatar(
+    user_id: int,
+    avatar_name: str,
+    avatar_type: str,
+) -> None:
+    async with session() as cursor:
+        await cursor.execute(
+            insert(UserAvatars).values(
+                user_id=user_id,
+                avatar_name=avatar_name,
+                avatar_type=avatar_type,
+            )
+        )
+        await cursor.commit()
+
+
+async def set_user_avatar(
+    user_id: int,
+    avatar_name: str,
+    avatar_type: str,
+    *,
+    add_to_history: bool,
+) -> None:
+    async with session() as cursor:
+        if add_to_history:
+            await cursor.execute(
+                insert(UserAvatars).values(
+                    user_id=user_id,
+                    avatar_name=avatar_name,
+                    avatar_type=avatar_type,
+                )
+            )
+        await cursor.execute(
+            update(Users)
+            .filter_by(id=user_id)
+            .values(avatar_name=avatar_name, avatar_type=avatar_type)
+        )
+        await cursor.commit()
+
+
+async def select_user_avatar_history(user_id: int) -> list[UserAvatars]:
+    async with session() as cursor:
+        result = await cursor.execute(
+            select(UserAvatars)
+            .filter_by(user_id=user_id)
+            .order_by(UserAvatars.created_at.desc(), UserAvatars.id.desc())
+        )
+        return list(result.scalars().all())
+
+
+async def select_owned_user_avatar(
+    user_id: int,
+    avatar_name: str,
+) -> UserAvatars | None:
+    async with session() as cursor:
+        result = await cursor.execute(
+            select(UserAvatars).filter_by(
+                user_id=user_id,
+                avatar_name=avatar_name,
+            )
+        )
+        return result.scalar()
+
+
+async def select_user_avatar_names(user_id: int) -> list[str]:
+    async with session() as cursor:
+        result = await cursor.execute(
+            select(UserAvatars.avatar_name).filter_by(user_id=user_id)
+        )
+        return list(result.scalars().all())
+
+
+async def select_user_with_conversations(user_id: int) -> Users:
+    async with session() as cursor:
+        result = await cursor.execute(
             select(Users)
-            .options(selectinload(Users.conversations).selectinload(Conversations.members))
+            .options(
+                selectinload(Users.conversations)
+                .selectinload(Conversations.members)
+            )
+            .filter_by(id=user_id)
+        )
+        return result.scalar()
+
+
+async def select_user_with_unread(user_id: int) -> Users:
+    async with session() as cursor:
+        result = await cursor.execute(
+            select(Users)
             .options(selectinload(Users.unread_messages))
             .filter_by(id=user_id)
         )
-        raw_data = await cursor.execute(query)
-        raw_data = raw_data.scalar()
-
-        return raw_data
+        return result.scalar()
 
 
 async def select_users(users_ids: list[int]) -> list[Users]:
@@ -74,12 +170,12 @@ async def select_users_by_nickname(search_query: str, limit: int | None) -> list
         if limit is None:
             _query = (
                 select(Users)
-                .filter(Users.nickname.icontains(search_query))
+                .filter(Users.nickname.icontains(search_query, autoescape=True))
             )
         else:
             _query = (
                 select(Users)
-                .filter(Users.nickname.icontains(search_query))
+                .filter(Users.nickname.icontains(search_query, autoescape=True))
                 .limit(limit)
             )
 
@@ -156,10 +252,7 @@ async def delete_user(user_id: int) -> None:
 
 async def is_user_avatar_uuid_existed(avatar_uuid: str) -> bool:
     async with session() as cursor:
-        query = (
-            select(Users.id)
-            .filter_by(avatar_name=avatar_uuid)
-        )
+        query = select(UserAvatars.id).filter_by(avatar_name=avatar_uuid)
         result = await cursor.execute(query)
         if result.first():
             return True

@@ -4,6 +4,7 @@ from fastapi import FastAPI, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from sqlalchemy import text
 
 from triggers import (
     setup_unread_messages_changes_trigger,
@@ -23,9 +24,17 @@ from routes import (
     users_router,
     conversations_router,
     anonymous_users_router,
-    messages_router
+    messages_router,
+    calls_router,
 )
 from storage import FileManager
+from database import session
+from dependencies import redis_client
+from middleware import (
+    RateLimitMiddleware,
+    RequestBodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 from utilities import (
     UserNotFoundError,
     ConversationNotFoundError,
@@ -46,27 +55,39 @@ from utilities import (
     UserNotInConversation,
     FileRangeError,
     UnreadMessageAlreadyExists,
-    generic_settings
+    StorageQuotaExceeded,
+    generic_settings,
+    validate_runtime_settings,
+    AppModes,
 )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    await create_schema()
-    await create_tables()
-    await setup_unread_messages_changes_trigger()
-    await setup_recipients_change_trigger()
-    await setup_user_delete_trigger()
-    await setup_conversation_delete_trigger()
-    await setup_messages_delete_trigger()
-    asyncio.create_task(setup_unread_messages_changes_listener())
-    asyncio.create_task(setup_recipients_change_listener())
-    asyncio.create_task(setup_user_delete_listener())
-    asyncio.create_task(setup_conversation_delete_listener())
-    asyncio.create_task(setup_messages_delete_listener())
+    validate_runtime_settings()
+    if generic_settings.MODE != AppModes.PRODUCTION.value:
+        await create_schema()
+        await create_tables()
+        await setup_unread_messages_changes_trigger()
+        await setup_recipients_change_trigger()
+        await setup_user_delete_trigger()
+        await setup_conversation_delete_trigger()
+        await setup_messages_delete_trigger()
+    listener_tasks = [
+        asyncio.create_task(setup_unread_messages_changes_listener()),
+        asyncio.create_task(setup_recipients_change_listener()),
+        asyncio.create_task(setup_user_delete_listener()),
+        asyncio.create_task(setup_conversation_delete_listener()),
+        asyncio.create_task(setup_messages_delete_listener()),
+    ]
 
     FileManager.create_folders_structure()
-    yield
+    try:
+        yield
+    finally:
+        for task in listener_tasks:
+            task.cancel()
+        await asyncio.gather(*listener_tasks, return_exceptions=True)
 
 app = FastAPI(
     title="ChatWave",
@@ -83,6 +104,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RequestBodyLimitMiddleware)
+
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    async with session() as cursor:
+        await cursor.execute(text("SELECT 1"))
+    await redis_client.ping()
+    return {"status": "ok"}
 
 
 @app.exception_handler(UserNotFoundError)
@@ -184,6 +216,14 @@ async def unread_message_already_exists_handler(request: Request, exc: UnreadMes
     return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
 
 
+@app.exception_handler(StorageQuotaExceeded)
+async def storage_quota_exceeded_handler(request: Request, exc: StorageQuotaExceeded):
+    return JSONResponse(
+        status_code=status.HTTP_507_INSUFFICIENT_STORAGE,
+        content={"detail": str(exc)},
+    )
+
+
 app.include_router(authorization_router)
 
 app.include_router(anonymous_users_router)
@@ -192,3 +232,4 @@ app.include_router(users_router)
 app.include_router(conversations_router)
 
 app.include_router(messages_router)
+app.include_router(calls_router)

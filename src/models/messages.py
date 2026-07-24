@@ -1,4 +1,4 @@
-from sqlalchemy import Index, ForeignKey
+from sqlalchemy import Index, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import OrmBase
@@ -28,6 +28,19 @@ class Messages(OrmBase):
     content: Mapped[text_not_required_type]
     file_content_name: Mapped[text_not_required_type]
     file_content_type: Mapped[text_not_required_type]
+    file_size: Mapped[int | None] = mapped_column(nullable=True)
+    original_file_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    client_message_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+    reply_to_id: Mapped[int | None] = mapped_column(
+        ForeignKey("messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime_auto_set]
     updated_at: Mapped[datetime_auto_update]
 
@@ -39,8 +52,17 @@ class Messages(OrmBase):
     )
     unread_messages: Mapped[list["UnreadMessages"]] = relationship()
 
-    __table_args = (
-        Index("ix_messages_created_at_content", "created_at", "content"),
+    __table_args__ = (
+        Index(
+            "ix_messages_conversation_created_at",
+            "conversation_id",
+            "created_at",
+        ),
+        UniqueConstraint(
+            "sender_id",
+            "client_message_id",
+            name="uq_messages_sender_client_id",
+        ),
     )
 
 

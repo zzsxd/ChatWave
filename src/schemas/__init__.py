@@ -4,11 +4,13 @@ from .users import (
     PublicUser,
     PrivateUser,
     UpdateUser,
+    ChangePassword,
     UpdateUserDB,
     Avatar,
     UserOnline,
     UsersIds,
-    UserRole
+    UserRole,
+    AvatarHistoryItem,
 )
 from .conversations import (
     CreateGroup,
@@ -23,15 +25,37 @@ from .conversations import (
 )
 from .messages import (
     CreateTextMessage,
+    UpdateTextMessage,
     CreateTextMessageDB,
     CreateMediaMessage,
     CreateMediaMessageDB,
     GetMessage,
-    MessagesIds
+    MessagesIds,
+    ReactionAction,
+    MessageReaction,
 )
 from .unread_messages import (
     GetUnreadMessages,
     FilterUnreadMessages,
     UnreadMessageExistedDTO,
     AddUnreadMessagesDB
+)
+from .calls import (
+    AcceptCall,
+    CallAction,
+    CallCandidate,
+    CallHeartbeat,
+    CallMediaState,
+    GroupCallAnswer,
+    GroupCallCandidate,
+    GroupCallMediaState,
+    GroupCallOffer,
+    JoinGroupCall,
+    LeaveGroupCall,
+    StartGroupCall,
+    CallSignal,
+    IceCandidate,
+    SessionDescription,
+    StartCall,
+    parse_call_signal,
 )

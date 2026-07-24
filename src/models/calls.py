@@ -11,11 +11,11 @@ class Calls(OrmBase):
     __tablename__ = 'calls'
     id: Mapped[primary_key_type]
     conversation_id: Mapped[int] = mapped_column(
-        ForeignKey('conversations.id'),
+        ForeignKey('conversations.id', ondelete="CASCADE"),
         index=True
     )
     caller_id: Mapped[int] = mapped_column(
-        ForeignKey('users.id')
+        ForeignKey('users.id', ondelete="CASCADE")
     )
     status: Mapped[CallsStatus] = mapped_column(nullable=False)
     duration: Mapped[int] = mapped_column(nullable=True)

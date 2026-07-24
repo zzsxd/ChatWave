@@ -1,10 +1,14 @@
+import asyncio
 import zipfile
+import tempfile
 from PIL import Image
 from typing import Union, Literal
 from pathlib import Path
 from io import BytesIO
 
 from utilities import generic_settings, MessagesTypes, ImageCorrupted, InvalidFileType, FIleToBig
+
+archive_semaphore = asyncio.Semaphore(2)
 
 
 class StorageUtils:
@@ -17,48 +21,71 @@ class StorageUtils:
 
     @staticmethod
     async def write_file(file_path: Path, file_data: bytes):
-        with open(str(file_path), "wb") as f:
-            f.write(file_data)
+        await asyncio.to_thread(file_path.write_bytes, file_data)
 
     @staticmethod
     async def read_file(file_path: Path):
-        with open(str(file_path), "rb") as f:
-            return f.read()
+        return await asyncio.to_thread(file_path.read_bytes)
 
     @staticmethod
     async def delete_file(file_path: Path) -> None:
-        file_path.unlink()
+        await asyncio.to_thread(file_path.unlink, missing_ok=True)
 
     @staticmethod
     async def file_exists(file_path: Path) -> bool:
-        return file_path.exists() and file_path.is_file()
+        return await asyncio.to_thread(lambda: file_path.exists() and file_path.is_file())
 
     @staticmethod
     async def check_file_size(file_path: Path) -> int:
-        return file_path.stat().st_size
+        return await asyncio.to_thread(lambda: file_path.stat().st_size)
 
-    async def archive_files(self, files_paths: list[Path]) -> BytesIO:
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            for file_path in files_paths:
-                if await self.file_exists(file_path=file_path):
-                    zip_file.write(file_path, arcname=file_path.name)
+    async def archive_files(self, files_paths: list[Path]):
+        def build_archive():
+            aggregate_size = sum(
+                file_path.stat().st_size
+                for file_path in files_paths
+                if file_path.exists() and file_path.is_file()
+            )
+            max_size = generic_settings.MAX_ARCHIVE_SIZE_MB * 1024 * 1024
+            if aggregate_size > max_size:
+                raise FIleToBig(
+                    file_type_name="archive",
+                    size_limit=generic_settings.MAX_ARCHIVE_SIZE_MB,
+                )
+            zip_buffer = tempfile.SpooledTemporaryFile(
+                max_size=8 * 1024 * 1024,
+                mode="w+b",
+            )
+            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                for file_path in files_paths:
+                    if file_path.exists() and file_path.is_file():
+                        zip_file.write(file_path, arcname=file_path.name)
+            zip_buffer.seek(0)
+            return zip_buffer
 
-        zip_buffer.seek(0)
-        return zip_buffer
+        async with archive_semaphore:
+            return await asyncio.to_thread(build_archive)
 
     @staticmethod
     async def file_chunk_generator(file_paths: list[Path]):
+        chunk_size = generic_settings.CHUNK_SIZE * 1024 * 1024
         for file_path in file_paths:
             with open(file_path, "rb") as f:
-                while chunk := f.read(generic_settings.CHUNK_SIZE):
+                while chunk := await asyncio.to_thread(f.read, chunk_size):
                     yield chunk
 
     @staticmethod
     async def range_file_chunk_generator(file_path: Path, start_byte: int, end_byte: int):
+        chunk_size = generic_settings.CHUNK_SIZE * 1024 * 1024
+        remaining = end_byte - start_byte + 1
         with open(file_path, "rb") as f:
-            f.seek(start_byte)
-            yield f.read(end_byte - start_byte + 1)
+            await asyncio.to_thread(f.seek, start_byte)
+            while remaining:
+                chunk = await asyncio.to_thread(f.read, min(chunk_size, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
 
     @staticmethod
     async def calculate_file_size(file: bytes) -> float:
@@ -103,11 +130,24 @@ class StorageUtils:
                     print(e)
                     return False
             case MessagesTypes.VIDEO:
-                pass
+                return (
+                    file.startswith(b"\x1a\x45\xdf\xa3")
+                    or file.startswith(b"FLV")
+                    or (file.startswith(b"RIFF") and file[8:12] == b"AVI ")
+                    or file.startswith(b"\x00\x00\x01")
+                    or (len(file) >= 12 and file[4:8] == b"ftyp")
+                    or file.startswith(b"OggS")
+                )
             case MessagesTypes.AUDIO:
-                pass
+                return (
+                    file.startswith((b"ID3", b"fLaC", b"OggS", b"MThd"))
+                    or file[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2", b"\xff\xf1", b"\xff\xf9")
+                    or (file.startswith(b"RIFF") and file[8:12] == b"WAVE")
+                    or file.startswith(b"\x1a\x45\xdf\xa3")
+                    or (len(file) >= 12 and file[4:8] == b"ftyp")
+                )
             case MessagesTypes.FILE:
-                pass
+                return True
 
         return True
 
@@ -178,11 +218,17 @@ class StorageUtils:
             case MessagesTypes.IMAGE:
                 return ImageCorrupted()
             case MessagesTypes.VIDEO:
-                pass
+                return InvalidFileType(
+                    file_type_name=file_type_filter.value,
+                    file_types=", ".join(await StorageUtils._get_allowed_types(file_type_filter)),
+                )
             case MessagesTypes.AUDIO:
-                pass
+                return InvalidFileType(
+                    file_type_name=file_type_filter.value,
+                    file_types=", ".join(await StorageUtils._get_allowed_types(file_type_filter)),
+                )
             case MessagesTypes.FILE:
-                pass
+                return InvalidFileType(file_type_name="file", file_types="valid binary files")
 
     async def validate_file(
             self,
@@ -222,11 +268,12 @@ class StorageUtils:
             file_type: str)\
             -> Union[Literal[MessagesTypes.IMAGE, MessagesTypes.VIDEO, MessagesTypes.AUDIO, MessagesTypes.FILE]]:
 
-        if await self.validate_file_type(file_type=file_type, allowed_file_type=generic_settings.ALLOWED_IMAGE_TYPES):
+        normalized_type = (file_type or "application/octet-stream").split(";", 1)[0].strip().lower()
+        if await self.validate_file_type(file_type=normalized_type, allowed_file_type=generic_settings.ALLOWED_IMAGE_TYPES):
             return MessagesTypes.IMAGE
-        elif await self.validate_file_type(file_type=file_type, allowed_file_type=generic_settings.ALLOWED_VIDEO_TYPES):
+        elif await self.validate_file_type(file_type=normalized_type, allowed_file_type=generic_settings.ALLOWED_VIDEO_TYPES):
             return MessagesTypes.VIDEO
-        elif await self.validate_file_type(file_type=file_type, allowed_file_type=generic_settings.ALLOWED_AUDIO_TYPES):
+        elif await self.validate_file_type(file_type=normalized_type, allowed_file_type=generic_settings.ALLOWED_AUDIO_TYPES):
             return MessagesTypes.AUDIO
         else:
             return MessagesTypes.FILE

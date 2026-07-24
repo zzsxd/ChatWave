@@ -1,10 +1,14 @@
-from sqlalchemy import select, update, delete, insert
+from sqlalchemy import select, update, delete, insert, func
 from sqlalchemy.orm import selectinload
 
-from models import Conversations
+from models import Conversations, ConversationMembers
 from database import session
 from schemas import EditConversationDB, CreateEmptyConversation, CreateGroupDB
-from utilities import ConversationTypes
+from utilities import (
+    ChatAlreadyExists,
+    ConversationMemberRoles,
+    ConversationTypes,
+)
 
 
 async def is_conversation_exists(conversation_id: int) -> bool:
@@ -43,6 +47,82 @@ async def select_conversation(conversation_obj: CreateEmptyConversation | Create
         raw_data = raw_data.scalar()
 
         return raw_data
+
+
+async def create_private_conversation_atomic(
+    user_id: int,
+    recipient_id: int,
+) -> int:
+    first_id, second_id = sorted((user_id, recipient_id))
+    lock_key = (first_id << 32) | second_id
+
+    async with session() as cursor:
+        await cursor.execute(select(func.pg_advisory_xact_lock(lock_key)))
+        result = await cursor.execute(
+            select(Conversations.id)
+            .join(
+                ConversationMembers,
+                ConversationMembers.conversation_id == Conversations.id,
+            )
+            .filter(Conversations.type == ConversationTypes.PRIVATE)
+            .group_by(Conversations.id)
+            .having(
+                func.count(ConversationMembers.user_id) == 2,
+                func.count(ConversationMembers.user_id)
+                .filter(ConversationMembers.user_id.in_([first_id, second_id]))
+                == 2,
+            )
+            .limit(1)
+        )
+        existing_id = result.scalar()
+        if existing_id is not None:
+            raise ChatAlreadyExists(chat_id=existing_id)
+
+        result = await cursor.execute(
+            insert(Conversations)
+            .values(
+                creator_id=user_id,
+                type=ConversationTypes.PRIVATE,
+            )
+            .returning(Conversations.id)
+        )
+        conversation_id = result.scalar_one()
+        await cursor.execute(
+            insert(ConversationMembers).values(
+                [
+                    {
+                        "user_id": participant_id,
+                        "conversation_id": conversation_id,
+                        "role": ConversationMemberRoles.MEMBER,
+                    }
+                    for participant_id in (first_id, second_id)
+                ]
+            )
+        )
+        await cursor.commit()
+        return conversation_id
+
+
+async def create_group_conversation_atomic(
+    creator_id: int,
+    conversation_obj: CreateGroupDB,
+) -> int:
+    async with session() as cursor:
+        result = await cursor.execute(
+            insert(Conversations)
+            .values(**conversation_obj.model_dump(exclude_none=True))
+            .returning(Conversations.id)
+        )
+        conversation_id = result.scalar_one()
+        await cursor.execute(
+            insert(ConversationMembers).values(
+                user_id=creator_id,
+                conversation_id=conversation_id,
+                role=ConversationMemberRoles.CREATOR,
+            )
+        )
+        await cursor.commit()
+        return conversation_id
 
 
 async def select_conversation_by_id(conversation_id: int) -> Conversations:
@@ -89,6 +169,16 @@ async def update_conversation(conversation_id: int, conversation_obj: EditConver
             .values(**conversation_obj.model_dump(exclude_none=True))
         )
         await cursor.execute(query)
+        await cursor.commit()
+
+
+async def update_conversation_creator(conversation_id: int, creator_id: int) -> None:
+    async with session() as cursor:
+        await cursor.execute(
+            update(Conversations)
+            .filter_by(id=conversation_id)
+            .values(creator_id=creator_id)
+        )
         await cursor.commit()
 
 

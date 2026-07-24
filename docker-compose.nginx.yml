@@ -6,13 +6,24 @@ services:
     volumes:
       - app_data:${MEDIA_FOLDER:-/app/data}
     env_file:
-      - ".env"
+      - "${ENV_FILE:-.env}"
     environment:
       - DB_HOST=postgres
+      - DB_USER=${DB_USER:?DB_USER is required}
+      - DB_PASSWORD=${DB_PASSWORD:?DB_PASSWORD is required}
+      - DB_DATABASE=${DB_DATABASE:-postgres}
       - REDIS_HOST=redis
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?JWT_SECRET_KEY is required}
+      - API_CORS_ALLOW_ORIGINS=${API_CORS_ALLOW_ORIGINS:?API_CORS_ALLOW_ORIGINS is required}
+      - MODE=production
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    mem_limit: 1g
+    cpus: 2.0
     networks:
       - backend
 
@@ -25,7 +36,7 @@ services:
     volumes:
       - ${SSL_CERTS_FOLDER}:/cert:ro
     env_file:
-      - ".env"
+      - "${ENV_FILE:-.env}"
     depends_on:
       - chatwave
     networks:
@@ -41,31 +52,44 @@ services:
     volumes:
       - ${SSL_CERTS_FOLDER}:/cert:ro
     env_file:
-      - ".env"
+      - "${ENV_FILE:-.env}"
     depends_on:
       - chatwave
     networks:
       - backend
 
   postgres:
-    image: postgres:13
+    image: postgres:16
     restart: unless-stopped
     environment:
-       - POSTGRES_USER=${DB_USER:-admin}
-       - POSTGRES_PASSWORD=${DB_PASSWORD:-admin}
+       - POSTGRES_USER=${DB_USER:?DB_USER is required}
+       - POSTGRES_PASSWORD=${DB_PASSWORD:?DB_PASSWORD is required}
        - POSTGRES_DB=${DB_DATABASE:-postgres}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   redis:
-    image: redis:alpine
+    image: redis:7.4-alpine
     restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"]
     volumes:
       - redis_data:/data
     networks:
       - backend
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
 
 volumes:
   postgres_data:

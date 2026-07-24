@@ -1,6 +1,6 @@
 import pytest
 import io
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from models import Users
 from factories.users import UserFactory
@@ -41,4 +41,6 @@ async def upload_avatar(client: TestClient, authorized_test_client, file_name: s
     response = client.put("/users/me/avatar", headers=authorized_test_client["headers"], files=files)
     assert response.status_code == 204
 
-    return authorized_test_client["user_id"]
+    response = client.get("/users/me", headers=authorized_test_client["headers"])
+    assert response.status_code == 200
+    return response.json()["avatar_name"]

@@ -2,6 +2,7 @@ from .authentication import get_access_token, create_user
 from .users import (
     fetch_private_user,
     update_user_profile,
+    change_user_password,
     fetch_public_users,
     upload_user_avatar,
     fetch_users_avatars_paths,
@@ -9,6 +10,8 @@ from .users import (
     fetch_user_recipients_last_online,
     fetch_user_avatar_metadata,
     remove_user_avatar,
+    fetch_user_avatar_history,
+    restore_user_avatar,
     search_users_by_nickname,
     fetch_user_conversations,
     remove_user_account,
@@ -42,6 +45,13 @@ from .messages import (
     mark_message_delivered,
     parse_bytes_file_range,
     stream_file,
-    fetch_last_message
+    fetch_last_message,
+    react_to_message,
+    fetch_conversation_media,
+    fetch_pinned_messages,
+    pin_message,
+    unpin_message,
 )
 from .unread_messages import add_unread_messages
+from .calls import calls_listener, disconnect_call
+from .message_events import message_events_listener

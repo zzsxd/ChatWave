@@ -1,0 +1,10 @@
+-r requirements.txt
+factory-boy==3.3.3
+httpx==0.28.1
+pip-audit==2.9.0
+psycopg[binary]==3.2.9
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==6.2.1
+pytest-dependency==0.6.0
+ruff==0.12.5
