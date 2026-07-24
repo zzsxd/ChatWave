@@ -60,6 +60,16 @@ function serializeCandidate(candidate: RTCIceCandidate): Candidate {
   };
 }
 
+function findVideoSender(peer: RTCPeerConnection) {
+  return (
+    peer
+      .getTransceivers()
+      .find((transceiver) => transceiver.receiver.track.kind === "video")
+      ?.sender ??
+    peer.getSenders().find((sender) => sender.track?.kind === "video")
+  );
+}
+
 export function useCall(enabled: boolean) {
   const [ready, setReady] = useState(false);
   const [phase, setPhase] = useState<CallPhase>("idle");
@@ -84,6 +94,7 @@ export function useCall(enabled: boolean) {
 
   const socketRef = useRef<WebSocket | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
   const groupModeRef = useRef(false);
   const groupPeersRef = useRef(new Map<number, RTCPeerConnection>());
   const groupCandidatesRef = useRef(new Map<number, Candidate[]>());
@@ -180,6 +191,7 @@ export function useCall(enabled: boolean) {
     cameraTrackRef.current = null;
     setLocalStream(null);
     setRemoteStream(null);
+    remoteStreamRef.current = null;
     setRemoteStreams({});
     setRemoteMediaStates({});
     setGroupCall(false);
@@ -230,7 +242,31 @@ export function useCall(enabled: boolean) {
         iceTransportPolicy: "all",
       });
       stream.getTracks().forEach((track) => peer.addTrack(track, stream));
-      peer.ontrack = (event) => setRemoteStream(event.streams[0]);
+      if (!stream.getVideoTracks().length) {
+        peer.addTransceiver("video", { direction: "sendrecv" });
+      }
+      peer.ontrack = (event) => {
+        if (!remoteStreamRef.current) {
+          remoteStreamRef.current = new MediaStream();
+        }
+        const aggregate = remoteStreamRef.current;
+        if (
+          !aggregate
+            .getTracks()
+            .some((track) => track.id === event.track.id)
+        ) {
+          aggregate.addTrack(event.track);
+        }
+        const publishStream = () => {
+          setRemoteStream(new MediaStream(aggregate.getTracks()));
+          if (event.track.kind === "video") setMedia("video");
+        };
+        if (event.track.kind === "video" && event.track.muted) {
+          event.track.onunmute = publishStream;
+        } else {
+          publishStream();
+        }
+      };
       peer.onicecandidate = (event) => {
         if (!event.candidate) return;
         const candidate = serializeCandidate(event.candidate);
@@ -302,10 +338,30 @@ export function useCall(enabled: boolean) {
         ),
       );
       outbound.getTracks().forEach((track) => peer.addTrack(track, outbound));
+      if (!videoTrack) {
+        peer.addTransceiver("video", { direction: "sendrecv" });
+      }
       peer.ontrack = (event) => {
-        const stream =
-          event.streams[0] ?? new MediaStream([event.track]);
-        setRemoteStreams((current) => ({ ...current, [userId]: stream }));
+        const publishStream = () => {
+          setRemoteStreams((current) => {
+            const existingTracks = current[userId]?.getTracks() ?? [];
+            const tracks = existingTracks.some(
+              (track) => track.id === event.track.id,
+            )
+              ? existingTracks
+              : [...existingTracks, event.track];
+            return {
+              ...current,
+              [userId]: new MediaStream(tracks),
+            };
+          });
+          if (event.track.kind === "video") setMedia("video");
+        };
+        if (event.track.kind === "video" && event.track.muted) {
+          event.track.onunmute = publishStream;
+        } else {
+          publishStream();
+        }
       };
       peer.onicecandidate = (event) => {
         if (!event.candidate || !callIdRef.current) return;
@@ -608,6 +664,7 @@ export function useCall(enabled: boolean) {
         setRemoteScreenAudioSharing(false);
         setScreenShareError("");
         setMedia(callMedia);
+        setCameraOff(callMedia === "audio");
         setConversationId(targetConversationId);
         groupModeRef.current = isGroup;
         setGroupCall(isGroup);
@@ -660,6 +717,7 @@ export function useCall(enabled: boolean) {
       localStreamRef.current = stream;
       cameraTrackRef.current = stream.getVideoTracks()[0] ?? null;
       setLocalStream(stream);
+      setCameraOff(incoming.media === "audio");
       if (incoming.group) {
         send({ type: "call.group_join", call_id: incoming.callId });
         setPhase("connecting");
@@ -749,10 +807,60 @@ export function useCall(enabled: boolean) {
     setMuted(next);
   }, [localStream, muted]);
 
-  const toggleCamera = useCallback(() => {
-    const next = !cameraOff;
-    if (cameraTrackRef.current) cameraTrackRef.current.enabled = !next;
-    setCameraOff(next);
+  const toggleCamera = useCallback(async () => {
+    if (screenTrackRef.current) return;
+    const currentTrack = cameraTrackRef.current;
+    if (currentTrack?.readyState === "live") {
+      const next = !cameraOff;
+      currentTrack.enabled = !next;
+      setCameraOff(next);
+      return;
+    }
+
+    setScreenShareError("");
+    let cameraStream: MediaStream | null = null;
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30, max: 60 },
+        },
+        audio: false,
+      });
+      const cameraTrack = cameraStream.getVideoTracks()[0];
+      if (!cameraTrack) throw new Error("Камера недоступна");
+      const peers = groupModeRef.current
+        ? [...groupPeersRef.current.values()]
+        : peerRef.current
+          ? [peerRef.current]
+          : [];
+      const videoSenders = peers
+        .map(findVideoSender)
+        .filter((sender): sender is RTCRtpSender => Boolean(sender));
+      if (!videoSenders.length && !groupModeRef.current) {
+        throw new Error("Видеоканал звонка недоступен");
+      }
+      await Promise.all(
+        videoSenders.map((sender) => sender.replaceTrack(cameraTrack)),
+      );
+      cameraTrackRef.current = cameraTrack;
+      const audioTracks = localStreamRef.current?.getAudioTracks() ?? [];
+      localStreamRef.current?.getVideoTracks().forEach((track) => track.stop());
+      localStreamRef.current = new MediaStream([...audioTracks, cameraTrack]);
+      setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+      setCameraOff(false);
+      setMedia("video");
+    } catch (reason) {
+      cameraStream?.getTracks().forEach((track) => track.stop());
+      setScreenShareError(
+        reason instanceof DOMException && reason.name === "NotAllowedError"
+          ? "Доступ к камере не предоставлен"
+          : reason instanceof Error
+            ? reason.message
+            : "Не удалось включить камеру",
+      );
+    }
   }, [cameraOff]);
 
   const stopScreenShare = useCallback(async () => {
@@ -845,8 +953,7 @@ export function useCall(enabled: boolean) {
       return;
     }
     if (
-      media !== "video" ||
-      (!peerRef.current && groupPeersRef.current.size === 0) ||
+      (!groupModeRef.current && !peerRef.current) ||
       (phaseRef.current !== "connecting" && phaseRef.current !== "active")
     ) {
       return;
@@ -887,11 +994,12 @@ export function useCall(enabled: boolean) {
           ? [peerRef.current]
           : [];
       const videoSenders = peers
-        .map((peer) =>
-          peer.getSenders().find((sender) => sender.track?.kind === "video"),
-        )
+        .map(findVideoSender)
         .filter((sender): sender is RTCRtpSender => Boolean(sender));
-      if (!screenTrack || videoSenders.length === 0) {
+      if (
+        !screenTrack ||
+        (videoSenders.length === 0 && !groupModeRef.current)
+      ) {
         throw new Error("Видеоканал звонка недоступен");
       }
 
@@ -992,6 +1100,7 @@ export function useCall(enabled: boolean) {
       setLocalStream(new MediaStream([...audioTracks, screenTrack]));
       setScreenSharing(true);
       setScreenAudioSharing(sharesAudio);
+      setMedia("video");
       if (callIdRef.current) {
         try {
           send({
@@ -1018,7 +1127,7 @@ export function useCall(enabled: boolean) {
         );
       }
     }
-  }, [media, send, stopScreenShare]);
+  }, [send, stopScreenShare]);
 
   return {
     ready,

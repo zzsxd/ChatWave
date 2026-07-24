@@ -1503,6 +1503,28 @@ function CallOverlay({
     "window" | "minimized" | "fullscreen"
   >("window");
   const [remoteVolume, setRemoteVolume] = useState(1);
+  const remoteHasVideo = Boolean(
+    remoteStream
+      ?.getVideoTracks()
+      .some((track) => track.readyState === "live" && !track.muted),
+  );
+  const localHasVideo = Boolean(
+    localStream
+      ?.getVideoTracks()
+      .some((track) => track.readyState === "live" && track.enabled),
+  );
+  const groupVideoStreams = Object.entries(remoteStreams).filter(
+    ([, stream]) =>
+      stream
+        .getVideoTracks()
+        .some((track) => track.readyState === "live" && !track.muted),
+  );
+  const groupAudioStreams = Object.entries(remoteStreams).filter(
+    ([, stream]) =>
+      !stream
+        .getVideoTracks()
+        .some((track) => track.readyState === "live" && !track.muted),
+  );
 
   useEffect(() => {
     if (remoteVideo.current) remoteVideo.current.srcObject = remoteStream;
@@ -1680,12 +1702,12 @@ function CallOverlay({
             )}
           </button>
         </div>
-        {media === "audio" && !groupCall && (
+        {!groupCall && !remoteHasVideo && (
           <audio ref={remoteAudio} autoPlay aria-label="Звук собеседника" />
         )}
-        {groupCall && media === "audio" && (
+        {groupCall && groupAudioStreams.length > 0 && (
           <>
-            {Object.entries(remoteStreams).map(([userId, stream]) => (
+            {groupAudioStreams.map(([userId, stream]) => (
               <GroupStreamTile
                 key={userId}
                 userId={Number(userId)}
@@ -1702,14 +1724,14 @@ function CallOverlay({
             ))}
           </>
         )}
-        {media === "video" && groupCall && Object.keys(remoteStreams).length > 0 ? (
+        {groupCall && groupVideoStreams.length > 0 ? (
           <div
             className={`group-video-grid group-video-grid-${Math.min(
-              Object.keys(remoteStreams).length,
+              groupVideoStreams.length,
               4,
             )}`}
           >
-            {Object.entries(remoteStreams).map(([userId, stream]) => (
+            {groupVideoStreams.map(([userId, stream]) => (
               <GroupStreamTile
                 key={`grid-${userId}`}
                 userId={Number(userId)}
@@ -1725,7 +1747,7 @@ function CallOverlay({
               />
             ))}
           </div>
-        ) : media === "video" && !groupCall && remoteStream ? (
+        ) : remoteHasVideo && !groupCall && remoteStream ? (
           <div
             ref={remoteStage}
             className={`remote-stage ${remoteScreenSharing ? "screen-share-stage" : ""}`}
@@ -1762,7 +1784,7 @@ function CallOverlay({
               </button>
             )}
           </div>
-        ) : media !== "audio" || (!groupCall && !remoteStream) ? (
+        ) : !remoteHasVideo && groupVideoStreams.length === 0 ? (
           <div className="call-avatar-wrap">
             <span className="call-avatar">{initials}</span>
             <i />
@@ -1801,7 +1823,7 @@ function CallOverlay({
           {phase === "error" && <small className="call-error">{error}</small>}
         </div>
 
-        {media === "video" && localStream && (
+        {localHasVideo && localStream && (
           <video
             ref={localVideo}
             className={`local-video ${screenSharing ? "screen-share-preview" : ""}`}
@@ -1838,36 +1860,32 @@ function CallOverlay({
                 {muted ? <MicOff size={21} /> : <Mic size={21} />}
                 <span>{muted ? "Включить" : "Микрофон"}</span>
               </button>
-              {media === "video" && (
-                <button
-                  className={`call-button neutral ${cameraOff ? "disabled" : ""}`}
-                  onClick={onToggleCamera}
-                  disabled={screenSharing}
-                  aria-label={cameraOff ? "Включить камеру" : "Выключить камеру"}
-                >
-                  {cameraOff ? <VideoOff size={21} /> : <Video size={21} />}
-                  <span>{cameraOff ? "Включить" : "Камера"}</span>
-                </button>
-              )}
-              {media === "video" && (
-                <button
-                  className={`call-button neutral ${screenSharing ? "sharing" : ""}`}
-                  onClick={onToggleScreenShare}
-                  disabled={phase !== "connecting" && phase !== "active"}
-                  aria-label={
-                    screenSharing
-                      ? "Остановить демонстрацию экрана"
-                      : "Начать демонстрацию экрана"
-                  }
-                >
-                  {screenSharing ? (
-                    <ScreenShareOff size={21} />
-                  ) : (
-                    <ScreenShare size={21} />
-                  )}
-                  <span>{screenSharing ? "Остановить" : "Экран"}</span>
-                </button>
-              )}
+              <button
+                className={`call-button neutral ${cameraOff ? "disabled" : ""}`}
+                onClick={onToggleCamera}
+                disabled={screenSharing}
+                aria-label={cameraOff ? "Включить камеру" : "Выключить камеру"}
+              >
+                {cameraOff ? <VideoOff size={21} /> : <Video size={21} />}
+                <span>{cameraOff ? "Включить" : "Камера"}</span>
+              </button>
+              <button
+                className={`call-button neutral ${screenSharing ? "sharing" : ""}`}
+                onClick={onToggleScreenShare}
+                disabled={phase !== "connecting" && phase !== "active"}
+                aria-label={
+                  screenSharing
+                    ? "Остановить демонстрацию экрана"
+                    : "Начать демонстрацию экрана"
+                }
+              >
+                {screenSharing ? (
+                  <ScreenShareOff size={21} />
+                ) : (
+                  <ScreenShare size={21} />
+                )}
+                <span>{screenSharing ? "Остановить" : "Экран"}</span>
+              </button>
               <label className="call-volume" title="Громкость собеседника">
                 <Volume2 size={19} />
                 <input
