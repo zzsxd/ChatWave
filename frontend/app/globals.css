@@ -397,6 +397,18 @@ input:focus-visible {
   color: var(--cyan);
 }
 
+.call-copy .remote-muted-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 155, 170, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 92, 119, 0.1);
+  color: #ffb1bd;
+}
+
 .call-copy .call-error {
   margin-top: 7px;
   color: #ff9baa;
@@ -485,6 +497,39 @@ input:focus-visible {
   color: #dce8f7;
   font-size: 11px;
   backdrop-filter: blur(10px);
+}
+
+.group-video-tile > span svg {
+  display: inline-block;
+  margin-right: 5px;
+  color: #ff9baa;
+  vertical-align: -2px;
+}
+
+.group-muted-list {
+  position: absolute;
+  z-index: 6;
+  top: 64px;
+  left: 50%;
+  display: flex;
+  max-width: min(90%, 520px);
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  transform: translateX(-50%);
+}
+
+.group-muted-list > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 155, 170, 0.24);
+  border-radius: 999px;
+  background: rgba(4, 8, 14, 0.82);
+  color: #ffb1bd;
+  font-size: 11px;
+  backdrop-filter: blur(12px);
 }
 
 .screen-fullscreen-button {

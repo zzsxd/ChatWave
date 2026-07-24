@@ -268,13 +268,15 @@ try {
       call_id: groupStarted.call_id,
       screen_sharing: true,
       screen_audio: true,
+      microphone_muted: true,
     }),
   );
   const groupMedia = await secondSocket.wait("call.group_media_state");
   if (
     groupMedia.from_user_id !== first.profile.id ||
     !groupMedia.screen_sharing ||
-    !groupMedia.screen_audio
+    !groupMedia.screen_audio ||
+    !groupMedia.microphone_muted
   ) {
     throw new Error("Group screen-sharing state was not relayed");
   }
@@ -346,6 +348,7 @@ try {
       call_id: started.call_id,
       screen_sharing: true,
       screen_audio: true,
+      microphone_muted: true,
     }),
   );
   const mediaState = await secondSocket.wait("call.media_state");
@@ -354,6 +357,9 @@ try {
   }
   if (mediaState.screen_audio !== true) {
     throw new Error("Screen audio state was not relayed");
+  }
+  if (mediaState.microphone_muted !== true) {
+    throw new Error("Microphone mute state was not relayed");
   }
 
   await request(

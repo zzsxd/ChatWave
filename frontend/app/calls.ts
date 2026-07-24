@@ -36,7 +36,7 @@ type IncomingCall = {
 export type GroupRemoteStreams = Record<number, MediaStream>;
 export type GroupMediaStates = Record<
   number,
-  { screenSharing: boolean; screenAudio: boolean }
+  { screenSharing: boolean; screenAudio: boolean; microphoneMuted: boolean }
 >;
 
 const fallbackIceServers: RTCIceServer[] = [
@@ -89,6 +89,7 @@ export function useCall(enabled: boolean) {
   const [screenAudioSharing, setScreenAudioSharing] = useState(false);
   const [remoteScreenSharing, setRemoteScreenSharing] = useState(false);
   const [remoteScreenAudioSharing, setRemoteScreenAudioSharing] = useState(false);
+  const [remoteMuted, setRemoteMuted] = useState(false);
   const [screenShareError, setScreenShareError] = useState("");
   const [error, setError] = useState("");
 
@@ -106,6 +107,9 @@ export function useCall(enabled: boolean) {
   const screenAudioContextRef = useRef<AudioContext | null>(null);
   const callIdRef = useRef<number | null>(null);
   const phaseRef = useRef<CallPhase>("idle");
+  const mutedRef = useRef(false);
+  const screenSharingRef = useRef(false);
+  const screenAudioSharingRef = useRef(false);
   const localCandidates = useRef<Candidate[]>([]);
   const remoteCandidates = useRef<Candidate[]>([]);
   const disconnectedTimer = useRef<number | null>(null);
@@ -117,6 +121,11 @@ export function useCall(enabled: boolean) {
   useEffect(() => {
     phaseRef.current = phase;
   }, [phase]);
+
+  useEffect(() => {
+    screenSharingRef.current = screenSharing;
+    screenAudioSharingRef.current = screenAudioSharing;
+  }, [screenAudioSharing, screenSharing]);
 
   useEffect(() => {
     if (phase === "incoming") return startIncomingRingtone();
@@ -196,10 +205,14 @@ export function useCall(enabled: boolean) {
     setRemoteMediaStates({});
     setGroupCall(false);
     groupModeRef.current = false;
+    mutedRef.current = false;
+    screenSharingRef.current = false;
+    screenAudioSharingRef.current = false;
     setScreenSharing(false);
     setScreenAudioSharing(false);
     setRemoteScreenSharing(false);
     setRemoteScreenAudioSharing(false);
+    setRemoteMuted(false);
     setScreenShareError("");
     localCandidates.current = [];
     remoteCandidates.current = [];
@@ -509,6 +522,13 @@ export function useCall(enabled: boolean) {
                 Number,
               );
               await Promise.all(participantIds.map(offerGroupPeer));
+              send({
+                type: "call.group_media_state",
+                call_id: callIdRef.current,
+                screen_sharing: screenSharingRef.current,
+                screen_audio: screenAudioSharingRef.current,
+                microphone_muted: mutedRef.current,
+              });
               if (participantIds.length === 0) setPhase("active");
               break;
             }
@@ -567,6 +587,16 @@ export function useCall(enabled: boolean) {
               });
               break;
             }
+            case "call.group_peer_joined": {
+              send({
+                type: "call.group_media_state",
+                call_id: callIdRef.current,
+                screen_sharing: screenSharingRef.current,
+                screen_audio: screenAudioSharingRef.current,
+                microphone_muted: mutedRef.current,
+              });
+              break;
+            }
             case "call.group_media_state": {
               const userId = Number(message.from_user_id);
               setRemoteMediaStates((current) => ({
@@ -574,6 +604,7 @@ export function useCall(enabled: boolean) {
                 [userId]: {
                   screenSharing: Boolean(message.screen_sharing),
                   screenAudio: Boolean(message.screen_audio),
+                  microphoneMuted: Boolean(message.microphone_muted),
                 },
               }));
               break;
@@ -587,6 +618,13 @@ export function useCall(enabled: boolean) {
               await peer.setRemoteDescription(message.answer as Description);
               await flushCandidates();
               setPhase("connecting");
+              send({
+                type: "call.media_state",
+                call_id: callIdRef.current,
+                screen_sharing: screenSharingRef.current,
+                screen_audio: screenAudioSharingRef.current,
+                microphone_muted: mutedRef.current,
+              });
               break;
             }
             case "call.candidate": {
@@ -600,6 +638,7 @@ export function useCall(enabled: boolean) {
               if (Number(message.call_id) === callIdRef.current) {
                 setRemoteScreenSharing(Boolean(message.screen_sharing));
                 setRemoteScreenAudioSharing(Boolean(message.screen_audio));
+                setRemoteMuted(Boolean(message.microphone_muted));
               }
               break;
             case "call.reject":
@@ -720,6 +759,13 @@ export function useCall(enabled: boolean) {
       setCameraOff(incoming.media === "audio");
       if (incoming.group) {
         send({ type: "call.group_join", call_id: incoming.callId });
+        send({
+          type: "call.group_media_state",
+          call_id: incoming.callId,
+          screen_sharing: false,
+          screen_audio: false,
+          microphone_muted: mutedRef.current,
+        });
         setPhase("connecting");
         return;
       }
@@ -732,6 +778,13 @@ export function useCall(enabled: boolean) {
         type: "call.accept",
         call_id: incoming.callId,
         answer: serializeDescription(peer.localDescription),
+      });
+      send({
+        type: "call.media_state",
+        call_id: incoming.callId,
+        screen_sharing: false,
+        screen_audio: false,
+        microphone_muted: mutedRef.current,
       });
       await flushCandidates();
       setIncoming(null);
@@ -804,8 +857,28 @@ export function useCall(enabled: boolean) {
     localStream?.getAudioTracks().forEach((track) => {
       track.enabled = !next;
     });
+    mutedRef.current = next;
     setMuted(next);
-  }, [localStream, muted]);
+    const id = callIdRef.current;
+    if (
+      id &&
+      (phaseRef.current === "connecting" || phaseRef.current === "active")
+    ) {
+      try {
+        send({
+          type: groupModeRef.current
+            ? "call.group_media_state"
+            : "call.media_state",
+          call_id: id,
+          screen_sharing: screenSharingRef.current,
+          screen_audio: screenAudioSharingRef.current,
+          microphone_muted: next,
+        });
+      } catch {
+        // Signaling disconnect handling reports the connection failure.
+      }
+    }
+  }, [localStream, muted, send]);
 
   const toggleCamera = useCallback(async () => {
     if (screenTrackRef.current) return;
@@ -940,6 +1013,7 @@ export function useCall(enabled: boolean) {
           call_id: callIdRef.current,
           screen_sharing: false,
           screen_audio: false,
+          microphone_muted: mutedRef.current,
         });
       } catch {
         // A signaling disconnect is handled by the call socket.
@@ -1110,6 +1184,7 @@ export function useCall(enabled: boolean) {
             call_id: callIdRef.current,
             screen_sharing: true,
             screen_audio: sharesAudio,
+            microphone_muted: mutedRef.current,
           });
         } catch {
           // A signaling disconnect is handled by the call socket.
@@ -1146,6 +1221,7 @@ export function useCall(enabled: boolean) {
     screenAudioSharing,
     remoteScreenSharing,
     remoteScreenAudioSharing,
+    remoteMuted,
     screenShareError,
     error,
     start,

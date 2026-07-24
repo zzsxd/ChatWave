@@ -370,6 +370,7 @@ async def _handle_media_state(
             "call_id": call.id,
             "screen_sharing": signal.screen_sharing,
             "screen_audio": signal.screen_audio,
+            "microphone_muted": signal.microphone_muted,
         },
     )
 
@@ -563,6 +564,7 @@ async def _handle_group_media_state(
                 "from_user_id": current_user_id,
                 "screen_sharing": signal.screen_sharing,
                 "screen_audio": signal.screen_audio,
+                "microphone_muted": signal.microphone_muted,
             },
         )
 

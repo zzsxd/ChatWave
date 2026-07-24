@@ -55,11 +55,13 @@ def test_parse_call_media_state_signal():
             "call_id": 7,
             "screen_sharing": True,
             "screen_audio": True,
+            "microphone_muted": True,
         }
     )
     assert isinstance(signal, CallMediaState)
     assert signal.screen_sharing is True
     assert signal.screen_audio is True
+    assert signal.microphone_muted is True
 
 
 def test_build_ice_server_config_uses_short_lived_signed_credentials(monkeypatch):

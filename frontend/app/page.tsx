@@ -1345,6 +1345,7 @@ export default function Home() {
           screenAudioSharing={call.screenAudioSharing}
           remoteScreenSharing={call.remoteScreenSharing}
           remoteScreenAudioSharing={call.remoteScreenAudioSharing}
+          remoteMuted={call.remoteMuted}
           screenShareError={call.screenShareError}
           error={call.error}
           onAccept={call.accept}
@@ -1384,6 +1385,7 @@ function GroupStreamTile({
   volume,
   screenSharing,
   screenAudio,
+  microphoneMuted,
 }: {
   userId: number;
   stream: MediaStream;
@@ -1391,6 +1393,7 @@ function GroupStreamTile({
   volume: number;
   screenSharing: boolean;
   screenAudio: boolean;
+  microphoneMuted: boolean;
 }) {
   const mediaElement = useRef<HTMLVideoElement | HTMLAudioElement>(null);
   const tile = useRef<HTMLDivElement>(null);
@@ -1424,6 +1427,7 @@ function GroupStreamTile({
         }}
       />
       <span>
+        {microphoneMuted && <MicOff size={13} aria-label="Микрофон выключен" />}
         Участник #{userId}
         {screenAudio ? " · экран со звуком" : screenSharing ? " · экран" : ""}
       </span>
@@ -1457,6 +1461,7 @@ function CallOverlay({
   screenAudioSharing,
   remoteScreenSharing,
   remoteScreenAudioSharing,
+  remoteMuted,
   screenShareError,
   error,
   onAccept,
@@ -1476,7 +1481,7 @@ function CallOverlay({
   remoteStreams: Record<number, MediaStream>;
   remoteMediaStates: Record<
     number,
-    { screenSharing: boolean; screenAudio: boolean }
+    { screenSharing: boolean; screenAudio: boolean; microphoneMuted: boolean }
   >;
   muted: boolean;
   cameraOff: boolean;
@@ -1484,6 +1489,7 @@ function CallOverlay({
   screenAudioSharing: boolean;
   remoteScreenSharing: boolean;
   remoteScreenAudioSharing: boolean;
+  remoteMuted: boolean;
   screenShareError: string;
   error: string;
   onAccept: () => void;
@@ -1720,6 +1726,9 @@ function CallOverlay({
                 screenAudio={
                   remoteMediaStates[Number(userId)]?.screenAudio ?? false
                 }
+                microphoneMuted={
+                  remoteMediaStates[Number(userId)]?.microphoneMuted ?? false
+                }
               />
             ))}
           </>
@@ -1743,6 +1752,9 @@ function CallOverlay({
                 }
                 screenAudio={
                   remoteMediaStates[Number(userId)]?.screenAudio ?? false
+                }
+                microphoneMuted={
+                  remoteMediaStates[Number(userId)]?.microphoneMuted ?? false
                 }
               />
             ))}
@@ -1792,6 +1804,25 @@ function CallOverlay({
           </div>
         ) : null}
 
+        {groupCall && groupAudioStreams.some(
+          ([userId]) =>
+            remoteMediaStates[Number(userId)]?.microphoneMuted,
+        ) && (
+          <div className="group-muted-list" aria-live="polite">
+            {groupAudioStreams
+              .filter(
+                ([userId]) =>
+                  remoteMediaStates[Number(userId)]?.microphoneMuted,
+              )
+              .map(([userId]) => (
+                <span key={`muted-${userId}`}>
+                  <MicOff size={14} />
+                  Участник #{userId} выключил микрофон
+                </span>
+              ))}
+          </div>
+        )}
+
         <div className="call-copy">
           <span>{status}</span>
           <h2 id="call-title">{title}</h2>
@@ -1801,6 +1832,12 @@ function CallOverlay({
               {groupCall
                 ? ` · ${Object.keys(remoteStreams).length + 1} участников`
                 : ""}
+            </small>
+          )}
+          {!groupCall && remoteMuted && (
+            <small className="remote-muted-status" aria-live="polite">
+              <MicOff size={14} />
+              Собеседник выключил микрофон
             </small>
           )}
           {remoteScreenSharing && (

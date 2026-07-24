@@ -67,6 +67,7 @@ class CallMediaState(CallSignalModel):
     call_id: Annotated[int, Field(ge=1, le=2_147_483_647)]
     screen_sharing: bool
     screen_audio: bool = False
+    microphone_muted: bool = False
 
 
 class StartGroupCall(CallSignalModel):
@@ -125,6 +126,7 @@ class GroupCallMediaState(CallSignalModel):
     call_id: Annotated[int, Field(ge=1, le=2_147_483_647)]
     screen_sharing: bool
     screen_audio: bool = False
+    microphone_muted: bool = False
 
 
 CallSignal = Annotated[
