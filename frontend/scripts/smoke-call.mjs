@@ -1,5 +1,3 @@
-import WebSocket from "ws";
-
 const apiUrl = (process.env.CHATWAVE_API_URL ?? "http://localhost:8000").replace(
   /\/$/,
   "",
@@ -53,8 +51,8 @@ function connect(token) {
     const socket = new WebSocket(wsUrl, ["bearer", token]);
     const queue = [];
     const waiters = [];
-    socket.on("message", (data) => {
-      const message = JSON.parse(data.toString());
+    socket.addEventListener("message", (event) => {
+      const message = JSON.parse(event.data.toString());
       if (message.type === "call.error") {
         const error = new Error(`Signaling error ${message.code}: ${message.detail}`);
         waiters.splice(0).forEach(({ reject, timer }) => {
@@ -73,8 +71,8 @@ function connect(token) {
         queue.push(message);
       }
     });
-    socket.once("error", reject);
-    socket.once("open", () => {
+    socket.addEventListener("error", reject, { once: true });
+    socket.addEventListener("open", () => {
       resolve({
         socket,
         wait(type, timeout = 10_000) {
@@ -112,7 +110,7 @@ function connect(token) {
           }
         },
       });
-    });
+    }, { once: true });
   });
 }
 

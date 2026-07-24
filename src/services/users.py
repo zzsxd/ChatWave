@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.exc import IntegrityError
 
-from dependencies import redis_client
+from dependencies import fetch_online_user_ids, redis_client
 from repository import (
     update_user,
     select_users_by_nickname,
@@ -309,23 +309,13 @@ async def fetch_user_recipients_last_online(user_id: int) -> list[int]:
 async def fetch_users_online_status(users_ids: list[int]) -> list[UserOnline]:
     users_objs = list()
     raw_users_data = await select_users_last_online(users_ids=users_ids)
-    connection_counts = (
-        await redis_client.mget(
-            [f"ws:connections:{user_id}" for user_id in users_ids]
-        )
-        if users_ids
-        else []
-    )
-    online_by_user = {
-        user_id: bool(value and int(value) > 0)
-        for user_id, value in zip(users_ids, connection_counts)
-    }
+    online_user_ids = await fetch_online_user_ids(users_ids)
 
     for raw_user_data in raw_users_data:
         transformed_data = {
             "user_id": raw_user_data[0],
             "last_online": raw_user_data[1],
-            "online": online_by_user.get(raw_user_data[0], False),
+            "online": raw_user_data[0] in online_user_ids,
         }
         users_objs.append(UserOnline.model_validate(transformed_data))
 

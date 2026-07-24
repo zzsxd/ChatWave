@@ -27,7 +27,15 @@ from schemas import (
     GetConversationsWithMembers,
     GetUnreadMessages
 )
-from dependencies import verify_token, update_last_online, verify_token_ws, redis_client
+from dependencies import (
+    acquire_websocket_lease,
+    refresh_websocket_lease,
+    release_websocket_lease,
+    verify_token,
+    update_last_online,
+    verify_token_ws,
+    redis_client,
+)
 from storage import FileManager
 from utilities import read_upload_limited, generic_settings
 from validators import verify_current_user_is_existed
@@ -133,24 +141,12 @@ async def get_users_last_online(
     return users_last_online
 
 
-async def authenticate_websocket(websocket: WebSocket) -> tuple[int, str] | None:
+async def authenticate_websocket(
+    websocket: WebSocket,
+) -> tuple[int, str, str] | None:
     origin = websocket.headers.get("origin")
     if origin and origin not in generic_settings.API_CORS_ALLOW_ORIGINS:
         await websocket.close(code=1008)
-        return None
-
-    client_host = websocket.client.host if websocket.client else "unknown"
-    handshake_bucket = int(time.time()) // 60
-    handshake_key = f"rate:ws:{client_host}:{handshake_bucket}"
-    try:
-        handshakes = await redis_client.incr(handshake_key)
-        if handshakes == 1:
-            await redis_client.expire(handshake_key, 61)
-        if handshakes > generic_settings.RATE_LIMIT_WEBSOCKET_HANDSHAKES_PER_MINUTE:
-            await websocket.close(code=1008)
-            return None
-    except Exception:
-        await websocket.close(code=1013)
         return None
 
     protocols = [
@@ -167,35 +163,49 @@ async def authenticate_websocket(websocket: WebSocket) -> tuple[int, str] | None
         await websocket.close(code=1008)
         return None
 
-    connection_key = f"ws:connections:{current_user_id}"
-    connections = await redis_client.incr(connection_key)
-    await redis_client.expire(connection_key, 3600)
-    if connections > generic_settings.MAX_WEBSOCKETS_PER_USER:
-        await redis_client.decr(connection_key)
+    handshake_bucket = int(time.time()) // 60
+    handshake_key = f"rate:ws:user:{current_user_id}:{handshake_bucket}"
+    try:
+        handshakes = await redis_client.incr(handshake_key)
+        if handshakes == 1:
+            await redis_client.expire(handshake_key, 61)
+        if handshakes > generic_settings.RATE_LIMIT_WEBSOCKET_HANDSHAKES_PER_MINUTE:
+            await websocket.close(code=1008)
+            return None
+    except Exception:
+        await websocket.close(code=1013)
+        return None
+
+    lease = await acquire_websocket_lease(
+        current_user_id,
+        generic_settings.MAX_WEBSOCKETS_PER_USER,
+    )
+    if lease is None:
         await websocket.close(code=1008)
         return None
+    connection_id, connections = lease
 
     await websocket.accept(subprotocol="bearer")
     if connections == 1:
         await redis_client.publish("user:presence_events", str(current_user_id))
-    return current_user_id, protocols[1]
+    return current_user_id, protocols[1], connection_id
 
 
-async def release_websocket(current_user_id: int) -> None:
-    connection_key = f"ws:connections:{current_user_id}"
-    if await redis_client.get(connection_key):
-        connections = await redis_client.decr(connection_key)
-        if connections <= 0:
-            await redis_client.delete(connection_key)
-            await update_user_last_online(user_id=current_user_id)
-            await redis_client.publish(
-                "user:last_online_events",
-                str(current_user_id),
-            )
-            await redis_client.publish(
-                "user:presence_events",
-                str(current_user_id),
-            )
+async def release_websocket(current_user_id: int, connection_id: str) -> None:
+    connections = await release_websocket_lease(
+        current_user_id,
+        connection_id,
+    )
+    if connections <= 0:
+        await update_user_last_online(user_id=current_user_id)
+        await redis_client.publish(
+            "user:last_online_events",
+            str(current_user_id),
+        )
+        await redis_client.publish(
+            "user:presence_events",
+            str(current_user_id),
+        )
 
 
 async def run_authenticated_websocket(
@@ -205,18 +215,20 @@ async def run_authenticated_websocket(
     authentication = await authenticate_websocket(websocket)
     if authentication is None:
         return
-    current_user_id, token = authentication
+    current_user_id, token, connection_id = authentication
 
     async def authentication_watchdog() -> None:
-        connection_key = f"ws:connections:{current_user_id}"
         while True:
             await asyncio.sleep(10)
             if (
                 await verify_token_ws(token) is not None
                 and await is_user_exists(user_id=current_user_id)
             ):
-                await redis_client.expire(connection_key, 3600)
-                continue
+                if await refresh_websocket_lease(
+                    current_user_id,
+                    connection_id,
+                ):
+                    continue
             await websocket.close(code=1008)
             return
 
@@ -232,7 +244,7 @@ async def run_authenticated_websocket(
         await asyncio.gather(*pending, return_exceptions=True)
         await asyncio.gather(listener_task, watchdog_task, return_exceptions=True)
     finally:
-        await release_websocket(current_user_id)
+        await release_websocket(current_user_id, connection_id)
 
 
 @anonymous_users_router.websocket("/ws/online")
