@@ -80,7 +80,17 @@ export function MessageComposer({
           </button>
         </div>
       )}
-      <form className="composer" onSubmit={onSubmit}>
+      <form
+        className="composer"
+        noValidate
+        onSubmit={(event) => {
+          // Prevent the browser's native form navigation even if the async
+          // message handler throws or is replaced while the component is live.
+          event.preventDefault();
+          event.stopPropagation();
+          onSubmit(event);
+        }}
+      >
         <input
           ref={fileInputRef}
           className="file-input"

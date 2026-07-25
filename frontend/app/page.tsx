@@ -865,6 +865,7 @@ export default function Home() {
 
   const sendMessage = async (event: FormEvent) => {
     event.preventDefault();
+    event.stopPropagation();
     const content = draft.trim();
     if (!content) return;
     if (editingMessageId && activeChat.conversationId && connectedUser) {

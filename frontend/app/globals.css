@@ -31,6 +31,8 @@
 
 html,
 body {
+  width: 100%;
+  height: 100%;
   min-height: 100%;
   margin: 0;
   overflow: hidden;
@@ -70,7 +72,10 @@ input:focus-visible {
 .app-canvas {
   --shell-gap: 22px;
   position: relative;
-  min-height: 100vh;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 100%;
   padding: var(--shell-gap);
   background:
     radial-gradient(circle at 78% 12%, rgba(47, 124, 255, 0.1), transparent 24%),
@@ -752,7 +757,9 @@ input:focus-visible {
   display: grid;
   grid-template-columns: 76px 364px minmax(0, 1fr);
   width: 100%;
+  max-width: 100%;
   height: calc(100vh - var(--shell-gap) * 2);
+  height: calc(100dvh - var(--shell-gap) * 2);
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: 22px;
@@ -864,8 +871,13 @@ input:focus-visible {
 }
 
 .rail-avatar > img {
+  display: block;
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
   border-radius: inherit;
   object-fit: cover;
 }
@@ -1138,13 +1150,21 @@ input:focus-visible {
   font-weight: 800;
   letter-spacing: 0.02em;
   box-shadow: 0 7px 16px rgba(0, 0, 0, 0.2);
+  isolation: isolate;
 }
 
 .avatar > img {
+  display: block;
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
   border-radius: inherit;
   object-fit: cover;
+  object-position: center;
+  overflow: hidden;
 }
 
 .avatar-blue { background: linear-gradient(145deg, #297ef7, #2246c8); }
@@ -1645,7 +1665,8 @@ input:focus-visible {
 
 .message-body {
   min-width: 0;
-  max-width: 760px;
+  max-width: min(760px, 100%);
+  overflow-wrap: anywhere;
 }
 
 .message-meta {
@@ -2551,6 +2572,10 @@ input:focus-visible {
 }
 
 .details-hero.compact > button.avatar > img {
+  min-width: 0;
+  min-height: 0;
+  max-width: 64px;
+  max-height: 64px;
   border-radius: inherit;
 }
 
@@ -3536,8 +3561,13 @@ input:focus-visible {
 }
 
 .profile-avatar-preview > img {
+  display: block;
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 92px;
+  max-height: 92px;
   overflow: hidden;
   border-radius: 26px;
   object-fit: cover;
@@ -4066,6 +4096,7 @@ input:focus-visible {
   .messenger-shell {
     grid-template-columns: 0 minmax(0, 1fr);
     height: 100vh;
+    height: 100dvh;
     border: 0;
     border-radius: 0;
   }
@@ -4125,6 +4156,11 @@ input:focus-visible {
 
   .conversation {
     grid-column: 2;
+  }
+
+  .conversation-header {
+    padding-top: env(safe-area-inset-top);
+    min-height: calc(72px + env(safe-area-inset-top));
   }
 
   .mobile-menu {
@@ -4194,6 +4230,44 @@ input:focus-visible {
   .channel-welcome {
     margin-top: 2px;
   }
+
+  .composer {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  .profile-settings-nav {
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  .profile-settings-backdrop,
+  .modal-backdrop,
+  .avatar-history-backdrop {
+    padding: 10px;
+  }
+
+  .avatar-history-modal,
+  .new-conversation-modal,
+  .profile-settings-modal {
+    max-height: calc(100dvh - 20px);
+  }
+
+  .message-body,
+  .message-copy {
+    max-width: 100%;
+  }
+
+  .message-body p {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .app-notice {
+    right: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
+    left: 12px;
+    max-width: none;
+  }
 }
 
 @media (max-width: 430px) {
@@ -4207,8 +4281,30 @@ input:focus-visible {
     border-radius: 18px;
   }
 
+  .profile-avatar-editor {
+    align-items: flex-start;
+  }
+
+  .profile-avatar-actions {
+    flex-wrap: wrap;
+  }
+
+  .search-results {
+    right: 8px;
+    left: 8px;
+    max-height: min(280px, 45dvh);
+  }
+
+  .call-overlay-minimized {
+    padding: 10px;
+  }
+
+  .call-mini-window {
+    width: 100%;
+  }
+
   .conversation-header {
-    min-height: 66px;
+    min-height: calc(66px + env(safe-area-inset-top));
     padding-inline: 12px;
   }
 
@@ -4221,7 +4317,7 @@ input:focus-visible {
   }
 
   .details-panel.open {
-    top: 66px;
+    top: calc(66px + env(safe-area-inset-top));
   }
 
   .messages-scroll {
@@ -4248,7 +4344,7 @@ input:focus-visible {
   }
 
   .composer {
-    padding: 8px 8px 12px;
+    padding: 8px 8px max(12px, env(safe-area-inset-bottom));
   }
 
   .composer > button:first-child,
@@ -4258,6 +4354,45 @@ input:focus-visible {
 
   .composer-field {
     min-height: 44px;
+  }
+
+  .composer-field > span button:nth-child(2),
+  .composer-field > span button:nth-child(3) {
+    display: none;
+  }
+
+  .profile-avatar-editor {
+    flex-direction: column;
+  }
+
+  .avatar-history-stage {
+    max-height: calc(100dvh - 132px);
+    aspect-ratio: auto;
+    height: min(72vw, calc(100dvh - 132px));
+  }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .conversation-header {
+    min-height: 56px;
+  }
+
+  .details-panel.open {
+    top: 56px;
+  }
+
+  .messages-scroll {
+    padding-top: 12px;
+  }
+
+  .composer {
+    padding-block: 6px;
+  }
+
+  .call-window,
+  .call-window.video-call {
+    min-height: calc(100dvh - 12px);
+    max-height: calc(100dvh - 12px);
   }
 }
 
