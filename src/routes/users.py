@@ -221,7 +221,7 @@ async def run_authenticated_websocket(
         while True:
             await asyncio.sleep(10)
             if (
-                await verify_token_ws(token) is not None
+                await verify_token_ws(token, allow_expired=True) is not None
                 and await is_user_exists(user_id=current_user_id)
             ):
                 if await refresh_websocket_lease(

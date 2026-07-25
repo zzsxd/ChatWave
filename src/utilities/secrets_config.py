@@ -141,6 +141,11 @@ class GenericSettings(BaseSettings):
         "::1/128",
     ]
     MAX_WEBSOCKETS_PER_USER: int = 12
+    REFRESH_SESSION_EXPIRES_SECONDS: int = Field(
+        default=34_560_000,
+        ge=86_400,
+        le=34_560_000,
+    )
     MAX_UNREAD_PAGE_SIZE: int = 100
     TURN_SHARED_SECRET: str | None = None
     TURN_URLS: list[str] = []

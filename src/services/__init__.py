@@ -1,4 +1,10 @@
-from .authentication import get_access_token, create_user
+from .authentication import (
+    authenticate_user,
+    create_auth_session,
+    create_user,
+    refresh_auth_session,
+    revoke_auth_session,
+)
 from .users import (
     fetch_private_user,
     update_user_profile,

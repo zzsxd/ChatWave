@@ -17,20 +17,32 @@ async def verify_token(token: Annotated[str, Depends(oauth2_scheme)]) -> int:
         invalid_before = await redis_client.get(f"auth:invalid_before:{user_id}")
         if invalid_before is not None and issued_at <= int(invalid_before):
             raise InvalidCredentials()
+        session_id = token_payload.get("sid")
+        if session_id and not await redis_client.exists(
+            f"auth:session:{session_id}"
+        ):
+            raise InvalidCredentials()
     except (InvalidTokenError, KeyError, TypeError, ValueError):
         raise InvalidCredentials()
 
     return user_id
 
 
-async def verify_token_ws(token: str) -> int | None:
+async def verify_token_ws(token: str, *, allow_expired: bool = False) -> int | None:
     try:
-        token_payload = JWT.decode_token(token)
+        token_payload = JWT.decode_token(token, verify_exp=not allow_expired)
         user_id = token_payload["id"]
         if await redis_client.exists(f"auth:revoked:{token_payload['jti']}"):
             return None
         invalid_before = await redis_client.get(f"auth:invalid_before:{user_id}")
         if invalid_before is not None and int(token_payload["iat"]) <= int(invalid_before):
+            return None
+        session_id = token_payload.get("sid")
+        if allow_expired and not session_id:
+            return None
+        if session_id and not await redis_client.exists(
+            f"auth:session:{session_id}"
+        ):
             return None
     except (InvalidTokenError, KeyError, TypeError, ValueError):
         return None

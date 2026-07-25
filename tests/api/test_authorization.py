@@ -17,6 +17,19 @@ async def test_signin(client: TestClient) -> None:
     assert response.status_code == 200
     assert "access_token" in tokens
     assert tokens["access_token"]
+    assert response.cookies.get("chatwave_refresh")
+    assert "HttpOnly" in response.headers["set-cookie"]
+
+    refreshed = client.post("/auth/refresh")
+    assert refreshed.status_code == 200
+    assert refreshed.json()["access_token"] != tokens["access_token"]
+
+    logout = client.post(
+        "/auth/logout",
+        headers={"Authorization": f"Bearer {refreshed.json()['access_token']}"},
+    )
+    assert logout.status_code == 204
+    assert client.post("/auth/refresh").status_code == 401
 
 
 async def test_signup(client: TestClient) -> None:

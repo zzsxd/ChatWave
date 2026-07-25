@@ -119,15 +119,24 @@ const DEFAULT_API_URL =
   process.env.NEXT_PUBLIC_CHATWAVE_API_URL?.replace(/\/$/, "") ??
   "http://localhost:8000";
 
+class SessionExpiredError extends Error {}
+
 class ChatWaveApi {
   private token: string | null = null;
   private apiUrl = DEFAULT_API_URL;
+  private refreshPromise: Promise<string> | null = null;
+  private refreshTimer: number | null = null;
 
   constructor() {
     if (typeof window !== "undefined") {
+      // Read the old tab-scoped token once so existing signed-in users can
+      // bootstrap the new HttpOnly refresh session without logging in again.
       this.token = sessionStorage.getItem("chatwave_token");
       this.apiUrl =
-        sessionStorage.getItem("chatwave_api_url") ?? DEFAULT_API_URL;
+        localStorage.getItem("chatwave_api_url") ??
+        sessionStorage.getItem("chatwave_api_url") ??
+        DEFAULT_API_URL;
+      if (this.token) this.scheduleRefresh(this.token);
     }
   }
 
@@ -143,8 +152,73 @@ class ChatWaveApi {
 
   clearSession() {
     this.token = null;
+    this.refreshPromise = null;
+    if (typeof window !== "undefined") {
+      if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+      sessionStorage.removeItem("chatwave_token");
+    }
+  }
+
+  private setToken(token: string) {
+    this.token = token;
     if (typeof window !== "undefined") {
       sessionStorage.removeItem("chatwave_token");
+      this.scheduleRefresh(token);
+    }
+  }
+
+  private scheduleRefresh(token: string) {
+    if (typeof window === "undefined") return;
+    if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+    try {
+      const encoded = token.split(".")[1];
+      const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+      const payload = JSON.parse(
+        window.atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=")),
+      ) as { exp?: number };
+      if (!payload.exp) return;
+      const delay = Math.max(5_000, payload.exp * 1_000 - Date.now() - 60_000);
+      this.refreshTimer = window.setTimeout(() => {
+        void this.refreshAccessToken().catch((error) => {
+          if (error instanceof SessionExpiredError) {
+            this.clearSession();
+          } else {
+            // Keep the durable session during temporary network failures and
+            // retry shortly instead of signing the user out.
+            this.refreshTimer = window.setTimeout(
+              () => this.scheduleRefresh(token),
+              30_000,
+            );
+          }
+        });
+      }, delay);
+    } catch {
+      // Invalid legacy tokens are handled by restoreSession/request.
+    }
+  }
+
+  private async refreshAccessToken(): Promise<string> {
+    if (this.refreshPromise) return this.refreshPromise;
+    const refreshRequest = (async () => {
+      const response = await fetch(`${this.apiUrl}/auth/refresh`, {
+        method: "POST",
+        credentials: "include",
+        headers: this.token
+          ? { Authorization: `Bearer ${this.token}` }
+          : undefined,
+      });
+      if (response.status === 401) throw new SessionExpiredError("Сессия истекла");
+      if (!response.ok) throw new Error(`Не удалось обновить сессию: ${response.status}`);
+      const payload = (await response.json()) as { access_token: string };
+      this.setToken(payload.access_token);
+      return payload.access_token;
+    })();
+    this.refreshPromise = refreshRequest;
+    try {
+      return await refreshRequest;
+    } finally {
+      if (this.refreshPromise === refreshRequest) this.refreshPromise = null;
     }
   }
 
@@ -179,14 +253,16 @@ class ChatWaveApi {
       throw new Error("Для защищённого сайта API также должен использовать HTTPS");
     }
     this.apiUrl = url.toString().replace(/\/$/, "");
-    sessionStorage.setItem("chatwave_api_url", this.apiUrl);
+    localStorage.setItem("chatwave_api_url", this.apiUrl);
+    sessionStorage.removeItem("chatwave_api_url");
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     let response: Response;
-    try {
-      response = await fetch(`${this.apiUrl}${path}`, {
+    const execute = () =>
+      fetch(`${this.apiUrl}${path}`, {
         ...init,
+        credentials: init.credentials ?? "include",
         headers: {
           ...(init.body instanceof FormData
             ? {}
@@ -195,7 +271,17 @@ class ChatWaveApi {
           ...init.headers,
         },
       });
-    } catch {
+    try {
+      response = await execute();
+      if (response.status === 401 && path !== "/auth/refresh") {
+        await this.refreshAccessToken();
+        response = await execute();
+      }
+    } catch (error) {
+      if (error instanceof SessionExpiredError) {
+        this.clearSession();
+        throw error;
+      }
       throw new Error(
         "Не удалось подключиться к серверу. Проверьте интернет и повторите попытку.",
       );
@@ -231,6 +317,7 @@ class ChatWaveApi {
     try {
       response = await fetch(`${this.apiUrl}/auth/login`, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
       });
@@ -244,8 +331,7 @@ class ChatWaveApi {
     }
     if (!response.ok) throw new Error("Неверный логин или пароль");
     const payload = (await response.json()) as { access_token: string };
-    this.token = payload.access_token;
-    sessionStorage.setItem("chatwave_token", payload.access_token);
+    this.setToken(payload.access_token);
     return this.me();
   }
 
@@ -259,15 +345,17 @@ class ChatWaveApi {
 
   async restoreSession() {
     if (typeof window !== "undefined") {
-      this.token = sessionStorage.getItem("chatwave_token");
+      this.token = this.token ?? sessionStorage.getItem("chatwave_token");
       this.apiUrl =
-        sessionStorage.getItem("chatwave_api_url") ?? DEFAULT_API_URL;
+        localStorage.getItem("chatwave_api_url") ??
+        sessionStorage.getItem("chatwave_api_url") ??
+        DEFAULT_API_URL;
     }
-    if (!this.token) return null;
     try {
+      await this.refreshAccessToken();
       return await this.me();
-    } catch {
-      this.clearSession();
+    } catch (error) {
+      if (error instanceof SessionExpiredError) this.clearSession();
       return null;
     }
   }
@@ -603,10 +691,20 @@ class ChatWaveApi {
   }
 
   async downloadMedia(messageId: number) {
-    const response = await fetch(`${this.apiUrl}/messages/${messageId}/media`, {
-      headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
-    });
-    if (response.status === 401) this.clearSession();
+    const execute = () =>
+      fetch(`${this.apiUrl}/messages/${messageId}/media`, {
+        credentials: "include",
+        headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+      });
+    let response = await execute();
+    if (response.status === 401) {
+      try {
+        await this.refreshAccessToken();
+        response = await execute();
+      } catch {
+        this.clearSession();
+      }
+    }
     if (!response.ok) throw new Error(`Ошибка загрузки: ${response.status}`);
     return response.blob();
   }

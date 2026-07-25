@@ -48,12 +48,15 @@ class JWT:
         return token
 
     @staticmethod
-    def decode_token(token: str) -> dict:
+    def decode_token(token: str, *, verify_exp: bool = True) -> dict:
         payload = jwt.decode(
             jwt=token,
             key=jwt_settings.JWT_SECRET_KEY,
             algorithms=[jwt_settings.JWT_ALGORITHM],
-            options={"require": ["exp", "iat", "jti"]},
+            options={
+                "require": ["exp", "iat", "jti"],
+                "verify_exp": verify_exp,
+            },
         )
         if payload.get("type") != "access" or not isinstance(payload.get("id"), int):
             raise ValueError("Invalid access token claims")
