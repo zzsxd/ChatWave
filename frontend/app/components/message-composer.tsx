@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, RefObject } from "react";
+import { ClipboardEvent, FormEvent, RefObject } from "react";
 import {
   Gift,
   MessageCircleMore,
@@ -51,6 +51,29 @@ export function MessageComposer({
   onStopRecording,
 }: MessageComposerProps) {
   const disabled = !chat.conversationId;
+  const pasteImage = (event: ClipboardEvent<HTMLInputElement>) => {
+    if (disabled || uploadingFile) return;
+    const imageItem = Array.from(event.clipboardData.items).find(
+      (item) => item.kind === "file" && item.type.startsWith("image/"),
+    );
+    const clipboardFile = imageItem?.getAsFile();
+    if (!clipboardFile) return;
+
+    event.preventDefault();
+    const extension =
+      clipboardFile.type.split("/", 2)[1]?.replace("jpeg", "jpg") || "png";
+    const fileName =
+      clipboardFile.name && clipboardFile.name !== "image.png"
+        ? clipboardFile.name
+        : `chatwave-${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
+    onFileSelected(
+      new File([clipboardFile], fileName, {
+        type: clipboardFile.type,
+        lastModified: Date.now(),
+      }),
+    );
+  };
+
   return (
     <>
       {editingMessage && (
@@ -113,6 +136,7 @@ export function MessageComposer({
           <input
             value={draft}
             onChange={(event) => onDraftChange(event.target.value)}
+            onPaste={pasteImage}
             aria-label="Новое сообщение"
             disabled={disabled}
             placeholder={
