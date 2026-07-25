@@ -82,6 +82,9 @@ export function MessageFeed({
       )}
 
       {messages.map((message, index) => {
+        const renderKey = message.clientMessageId
+          ? `client-${message.clientMessageId}`
+          : `message-${message.id}`;
         if (message.callEvent) {
           const minutes = Math.floor(message.callEvent.duration / 60);
           const seconds = message.callEvent.duration % 60;
@@ -92,7 +95,7 @@ export function MessageFeed({
           return (
             <article
               id={`message-${message.id}`}
-              key={message.id}
+              key={renderKey}
               className={`call-history-event ${
                 message.callEvent.outcome !== "completed" ? "missed" : ""
               }`}
@@ -117,7 +120,7 @@ export function MessageFeed({
         return (
           <article
             id={`message-${message.id}`}
-            key={message.id}
+            key={renderKey}
             className={`message ${message.own ? "own" : ""} ${
               message.pending ? "pending" : ""
             } ${message.failed ? "failed" : ""} ${

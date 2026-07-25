@@ -231,7 +231,27 @@ export const mapApiMessage = (
 };
 
 export const mergeMessages = (current: Message[], incoming: Message[]) => {
-  const byId = new Map<number, Message>();
-  [...current, ...incoming].forEach((message) => byId.set(message.id, message));
-  return [...byId.values()].sort((left, right) => left.id - right.id);
+  const byIdentity = new Map<string, Message>();
+  [...current, ...incoming].forEach((message) => {
+    const identity = message.clientMessageId
+      ? `client:${message.clientMessageId}`
+      : `id:${message.id}`;
+    const existing = byIdentity.get(identity);
+    byIdentity.set(
+      identity,
+      existing
+        ? {
+            ...existing,
+            ...message,
+            attachment: message.attachment ?? existing.attachment,
+          }
+        : message,
+    );
+  });
+  return [...byIdentity.values()].sort((left, right) => {
+    const leftOptimistic = left.id < 0;
+    const rightOptimistic = right.id < 0;
+    if (leftOptimistic !== rightOptimistic) return leftOptimistic ? 1 : -1;
+    return leftOptimistic ? right.id - left.id : left.id - right.id;
+  });
 };
