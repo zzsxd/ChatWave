@@ -82,6 +82,27 @@ async def _refresh_group_call(call_id: int, conversation_id: int) -> None:
     )
 
 
+async def _active_group_call_id(conversation_id: int) -> int | None:
+    active_value = await redis_client.get(
+        f"call:conversation:{conversation_id}:active"
+    )
+    if active_value is None:
+        return None
+    try:
+        call_id = int(active_value.decode())
+    except (AttributeError, ValueError):
+        return None
+    call, _ = await select_call_participants(call_id)
+    if (
+        call is None
+        or call.conversation_id != conversation_id
+        or call.status != CallsStatus.COMING
+        or not await _is_group_call(call_id)
+    ):
+        return None
+    return call_id
+
+
 async def _record_call_history(call, outcome: str) -> None:
     call_id = call.id
     try:
@@ -421,6 +442,19 @@ async def _handle_group_start(
             f"Group calls support up to {GROUP_CALL_MAX_PARTICIPANTS} participants",
         )
         return None
+
+    # A member may have missed the one-shot invitation, reloaded the page, or
+    # temporarily lost the signaling socket. In that case the regular call
+    # button must join the active room instead of trying to create another one.
+    active_group_call_id = await _active_group_call_id(signal.conversation_id)
+    if active_group_call_id is not None:
+        joined = await _handle_group_join(
+            current_user_id,
+            JoinGroupCall(type="call.group_join", call_id=active_group_call_id),
+            websocket,
+        )
+        return active_group_call_id if joined else None
+
     if not await _acquire_call_lock(signal.conversation_id):
         await _send_error(websocket, "busy", "This conversation already has a call")
         return None
@@ -490,11 +524,13 @@ async def _handle_group_join(
         await _send_error(websocket, "call_not_found", "Group call is not available")
         return False
     participants = await _group_participants(call.id)
-    if len(participants) >= GROUP_CALL_MAX_PARTICIPANTS:
+    already_joined = current_user_id in participants
+    if not already_joined and len(participants) >= GROUP_CALL_MAX_PARTICIPANTS:
         await _send_error(websocket, "call_full", "The group call is full")
         return False
     existing = sorted(participants - {current_user_id})
-    await redis_client.sadd(_group_participants_key(call.id), current_user_id)
+    if not already_joined:
+        await redis_client.sadd(_group_participants_key(call.id), current_user_id)
     await _refresh_group_call(call.id, call.conversation_id)
     await websocket.send_json(
         {
@@ -503,15 +539,16 @@ async def _handle_group_join(
             "participant_ids": existing,
         }
     )
-    for participant_id in existing:
-        await _publish(
-            participant_id,
-            {
-                "type": "call.group_peer_joined",
-                "call_id": call.id,
-                "user_id": current_user_id,
-            },
-        )
+    if not already_joined:
+        for participant_id in existing:
+            await _publish(
+                participant_id,
+                {
+                    "type": "call.group_peer_joined",
+                    "call_id": call.id,
+                    "user_id": current_user_id,
+                },
+            )
     return True
 
 

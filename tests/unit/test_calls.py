@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -137,6 +138,108 @@ async def test_successful_start_is_tracked_by_websocket_session(monkeypatch):
     )
 
     assert tracked_calls == {73}
+
+
+async def test_group_start_joins_an_existing_room(monkeypatch):
+    websocket = AsyncMock()
+    existing_call = SimpleNamespace(
+        id=73,
+        conversation_id=42,
+        status=calls_service.CallsStatus.COMING,
+    )
+    redis = AsyncMock()
+    redis.get.return_value = b"73"
+    join = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(calls_service, "redis_client", redis)
+    monkeypatch.setattr(
+        calls_service,
+        "validate_user_in_group",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        calls_service,
+        "select_conversation_members",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(user_id=11),
+                SimpleNamespace(user_id=12),
+                SimpleNamespace(user_id=13),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        calls_service,
+        "select_call_participants",
+        AsyncMock(return_value=(existing_call, [11, 12, 13])),
+    )
+    monkeypatch.setattr(
+        calls_service,
+        "_is_group_call",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(calls_service, "_handle_group_join", join)
+    acquire = AsyncMock(return_value=False)
+    monkeypatch.setattr(calls_service, "_acquire_call_lock", acquire)
+
+    call_id = await calls_service._handle_group_start(
+        13,
+        calls_service.StartGroupCall(
+            type="call.group_start",
+            conversation_id=42,
+            media="audio",
+        ),
+        websocket,
+    )
+
+    assert call_id == 73
+    join.assert_awaited_once()
+    assert join.await_args.args[1].call_id == 73
+    acquire.assert_not_awaited()
+    websocket.send_json.assert_not_awaited()
+
+
+async def test_group_join_is_idempotent_when_room_is_full(monkeypatch):
+    websocket = AsyncMock()
+    call = SimpleNamespace(id=73, conversation_id=42)
+    participants = set(range(1, calls_service.GROUP_CALL_MAX_PARTICIPANTS + 1))
+
+    monkeypatch.setattr(
+        calls_service,
+        "_resolve_group_call",
+        AsyncMock(return_value=call),
+    )
+    monkeypatch.setattr(
+        calls_service,
+        "_group_participants",
+        AsyncMock(return_value=participants),
+    )
+    monkeypatch.setattr(
+        calls_service,
+        "_refresh_group_call",
+        AsyncMock(return_value=None),
+    )
+    publish = AsyncMock()
+    monkeypatch.setattr(calls_service, "_publish", publish)
+    redis = AsyncMock()
+    monkeypatch.setattr(calls_service, "redis_client", redis)
+
+    joined = await calls_service._handle_group_join(
+        1,
+        calls_service.JoinGroupCall(type="call.group_join", call_id=73),
+        websocket,
+    )
+
+    assert joined is True
+    redis.sadd.assert_not_awaited()
+    publish.assert_not_awaited()
+    websocket.send_json.assert_awaited_once_with(
+        {
+            "type": "call.group_joined",
+            "call_id": 73,
+            "participant_ids": list(range(2, 9)),
+        }
+    )
 
 
 async def test_signaling_disconnect_cleans_up_tracked_calls(monkeypatch):
