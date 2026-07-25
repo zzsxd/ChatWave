@@ -4,6 +4,8 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   Camera,
   Check,
+  Copy,
+  Download,
   KeyRound,
   History,
   Save,
@@ -13,6 +15,11 @@ import {
 } from "lucide-react";
 import { ApiUser, chatWaveApi } from "../api";
 import { AvatarHistoryModal } from "./avatar-history-modal";
+import {
+  createRecoveryKey,
+  localRecoveryKey,
+  restoreRoomKeys,
+} from "../e2ee/client";
 
 type ProfileTab = "profile" | "security";
 
@@ -43,6 +50,12 @@ export function ProfileSettingsModal({
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [generatedRecoveryKey, setGeneratedRecoveryKey] = useState("");
+  const [recoveryInput, setRecoveryInput] = useState("");
+  const [hasLocalRecovery, setHasLocalRecovery] = useState(
+    () => Boolean(localRecoveryKey(user.id)),
+  );
   const fileInput = useRef<HTMLInputElement>(null);
 
   useEffect(
@@ -170,6 +183,44 @@ export function ProfileSettingsModal({
       );
     } finally {
       setLoading(false);
+    }
+  };
+
+  const createE2EERecovery = async () => {
+    setRecoveryLoading(true);
+    setError("");
+    setSuccess("");
+    try {
+      const key = await createRecoveryKey(user.id);
+      setGeneratedRecoveryKey(key);
+      setHasLocalRecovery(true);
+      setSuccess("Резервная копия ключей создана");
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Не удалось создать резервную копию ключей",
+      );
+    } finally {
+      setRecoveryLoading(false);
+    }
+  };
+
+  const restoreE2EE = async () => {
+    if (!recoveryInput.trim()) return;
+    setRecoveryLoading(true);
+    setError("");
+    setSuccess("");
+    try {
+      await restoreRoomKeys(user.id, recoveryInput);
+      setRecoveryInput("");
+      setHasLocalRecovery(true);
+      setSuccess("Ключи сообщений восстановлены на этом устройстве");
+      window.setTimeout(() => window.location.reload(), 900);
+    } catch {
+      setError("Неверный ключ восстановления или повреждённая копия");
+    } finally {
+      setRecoveryLoading(false);
     }
   };
 
@@ -336,6 +387,74 @@ export function ProfileSettingsModal({
                 </form>
               </>
             ) : (
+              <div className="security-settings-stack">
+              <section className="e2ee-recovery-card">
+                <div className="security-note">
+                  <KeyRound size={20} />
+                  <div>
+                    <strong>Восстановление E2EE</strong>
+                    <span>
+                      Сервер хранит только зашифрованную копию ключей. Без
+                      recovery key прочитать старые сообщения на новом
+                      устройстве невозможно.
+                    </span>
+                  </div>
+                </div>
+                <div className="recovery-status">
+                  {hasLocalRecovery
+                    ? "Резервное копирование включено"
+                    : "Recovery key ещё не создан"}
+                </div>
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={recoveryLoading}
+                  onClick={() => void createE2EERecovery()}
+                >
+                  <KeyRound size={17} />
+                  {hasLocalRecovery
+                    ? "Создать новый recovery key"
+                    : "Создать recovery key"}
+                </button>
+                {generatedRecoveryKey && (
+                  <div className="generated-recovery-key">
+                    <strong>Сохраните ключ сейчас</strong>
+                    <code>{generatedRecoveryKey}</code>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(
+                          generatedRecoveryKey,
+                        );
+                        setSuccess("Recovery key скопирован");
+                      }}
+                    >
+                      <Copy size={15} /> Копировать
+                    </button>
+                    <small>
+                      ChatWave не сможет показать этот ключ после закрытия
+                      окна.
+                    </small>
+                  </div>
+                )}
+                <label>
+                  Восстановить на новом устройстве
+                  <input
+                    type="password"
+                    value={recoveryInput}
+                    onChange={(event) => setRecoveryInput(event.target.value)}
+                    placeholder="Вставьте recovery key"
+                    autoComplete="off"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={!recoveryInput.trim() || recoveryLoading}
+                  onClick={() => void restoreE2EE()}
+                >
+                  <Download size={16} /> Восстановить ключи сообщений
+                </button>
+              </section>
               <form className="profile-settings-form" onSubmit={savePassword}>
                 <div className="security-note">
                   <KeyRound size={20} />
@@ -388,6 +507,7 @@ export function ProfileSettingsModal({
                   {loading ? "Обновляем…" : "Изменить пароль"}
                 </button>
               </form>
+              </div>
             )}
 
             {error && (

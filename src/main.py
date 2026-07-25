@@ -26,6 +26,7 @@ from routes import (
     anonymous_users_router,
     messages_router,
     calls_router,
+    e2ee_router,
 )
 from storage import FileManager
 from database import session
@@ -233,3 +234,4 @@ app.include_router(conversations_router)
 
 app.include_router(messages_router)
 app.include_router(calls_router)
+app.include_router(e2ee_router)

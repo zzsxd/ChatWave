@@ -9,6 +9,7 @@ import {
 import { ApiUser, MessageEvent, chatWaveApi } from "../api";
 import { Chat, Message, mapApiMessage, mergeMessages } from "../models";
 import { playMessageNotification } from "../notification-sounds";
+import { decryptApiMessage } from "../e2ee/client";
 
 type MessagesByChat = Record<string, Message[]>;
 type TypingByConversation = Record<number, number[]>;
@@ -67,7 +68,7 @@ export function useMessageSocket({
         retryDelay = 1_000;
         socketRef.current = socket;
       };
-      socket.onmessage = (event) => {
+      socket.onmessage = async (event) => {
         const payload = JSON.parse(event.data) as MessageEvent;
         if (
           payload.type === "message.created" ||
@@ -75,8 +76,12 @@ export function useMessageSocket({
         ) {
           const chat = findChat(payload.message.conversation_id);
           if (!chat) return;
-          const mapped = mapApiMessage(
+          const decryptedMessage = await decryptApiMessage(
+            connectedUser.id,
             payload.message,
+          );
+          const mapped = mapApiMessage(
+            decryptedMessage,
             chat,
             connectedUser,
             usersRef.current,

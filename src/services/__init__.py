@@ -34,6 +34,7 @@ from .conversations import (
     delete_all_messages
 )
 from .messages import (
+    create_encrypted_message,
     create_text_message,
     create_media_message,
     update_user_message,

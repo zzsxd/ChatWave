@@ -73,6 +73,13 @@ import {
   mergeMessages,
 } from "./models";
 import { initializeNotificationSounds } from "./notification-sounds";
+import {
+  decryptApiMessages,
+  encryptTextMessage,
+  initializeCrypto,
+  stopCryptoPolling,
+} from "./e2ee/client";
+import { closeCryptoMachine } from "./e2ee/crypto-runtime";
 
 const PAGE_SIZE = 50;
 const EMPTY_CHAT: Chat = {
@@ -347,17 +354,22 @@ export default function Home() {
     closeReactionPicker: () => setReactionPickerFor(null),
   });
 
-  const mapApiMessages = (
+  const mapApiMessages = async (
     apiMessages: ApiMessage[],
     chat: Chat,
     currentUser: ApiUser,
-  ): Message[] =>
-    apiMessages
+  ): Promise<Message[]> => {
+    const decryptedMessages = await decryptApiMessages(
+      currentUser.id,
+      apiMessages,
+    );
+    return decryptedMessages
       .slice()
       .reverse()
       .map((message) =>
         mapApiMessage(message, chat, currentUser, apiUsersRef.current),
       );
+  };
 
   const selectChat = async (chat: Chat) => {
     if (activeChat.conversationId) {
@@ -393,10 +405,15 @@ export default function Home() {
     if (!chat.conversationId || !connectedUser) return;
     try {
       const apiMessages = await chatWaveApi.messages(chat.conversationId);
+      const mappedMessages = await mapApiMessages(
+        apiMessages,
+        chat,
+        connectedUser,
+      );
       setMessagesByChat((current) => ({
         ...current,
         [chat.id]: mergeMessages(
-          mapApiMessages(apiMessages, chat, connectedUser),
+          mappedMessages,
           current[chat.id] ?? [],
         ),
       }));
@@ -446,6 +463,10 @@ export default function Home() {
     setApiUsers(workspace.users);
     apiUsersRef.current = workspace.users;
     setChatItems(workspace.chats);
+    await initializeCrypto(
+      user.id,
+      workspace.chats.flatMap((chat) => chat.memberIds ?? []),
+    );
 
     const selected =
       workspace.chats.find(
@@ -463,9 +484,12 @@ export default function Home() {
       selected === workspace.chats[0]
         ? workspace.initialMessages
         : await chatWaveApi.messages(selected.conversationId!);
-    setMessagesByChat({
-      [selected.id]: mapApiMessages(initialMessages, selected, user),
-    });
+    const mappedInitialMessages = await mapApiMessages(
+      initialMessages,
+      selected,
+      user,
+    );
+    setMessagesByChat({ [selected.id]: mappedInitialMessages });
     setHistoryByChat({
       [selected.id]: {
         beforeId: initialMessages.at(-1)?.id,
@@ -533,6 +557,8 @@ export default function Home() {
       chatWaveApi.clearSession();
     }
     queryClient.clear();
+    stopCryptoPolling();
+    closeCryptoMachine();
     setConnectedUser(null);
     setApiUsers({});
     setChatItems([]);
@@ -561,7 +587,7 @@ export default function Home() {
         activeChat.conversationId,
         history.beforeId,
       );
-      const mapped = mapApiMessages(older, activeChat, connectedUser);
+      const mapped = await mapApiMessages(older, activeChat, connectedUser);
       setMessagesByChat((current) => ({
         ...current,
         [activeChat.id]: mergeMessages(mapped, current[activeChat.id] ?? []),
@@ -630,6 +656,10 @@ export default function Home() {
   };
 
   const startEditing = (message: Message) => {
+    if (message.encrypted) {
+      setNotice("Редактирование E2EE-сообщений появится после ротации ключей.");
+      return;
+    }
     setEditingMessageId(message.id);
     setDraft(message.text);
   };
@@ -668,8 +698,19 @@ export default function Home() {
         activeChat.conversationId,
         searchQuery,
       );
+      const legacyResults = await mapApiMessages(
+        results,
+        activeChat,
+        connectedUser,
+      );
+      const normalizedQuery = searchQuery.toLocaleLowerCase("ru");
+      const encryptedLocalResults = activeMessages.filter(
+        (message) =>
+          message.encrypted &&
+          message.text.toLocaleLowerCase("ru").includes(normalizedQuery),
+      );
       setMessageSearchResults(
-        mapApiMessages(results, activeChat, connectedUser),
+        mergeMessages(legacyResults, encryptedLocalResults),
       );
     } catch {
       setNotice("Не удалось выполнить поиск по сообщениям.");
@@ -769,9 +810,14 @@ export default function Home() {
     try {
       const saved =
         retry.kind === "text"
-          ? await chatWaveApi.sendText(
+          ? await chatWaveApi.sendEncrypted(
               activeChat.conversationId,
-              retry.content,
+              await encryptTextMessage(
+                connectedUser.id,
+                activeChat.conversationId,
+                activeChat.memberIds ?? [],
+                retry.content,
+              ),
               retry.clientMessageId,
               retry.replyToId,
             )
@@ -865,9 +911,15 @@ export default function Home() {
     stopTyping();
     if (activeChat.conversationId && connectedUser) {
       try {
-        const saved = await chatWaveApi.sendText(
+        const encryptedContent = await encryptTextMessage(
+          connectedUser.id,
           activeChat.conversationId,
+          activeChat.memberIds ?? [],
           content,
+        );
+        const saved = await chatWaveApi.sendEncrypted(
+          activeChat.conversationId,
+          encryptedContent,
           optimisticMessage.clientMessageId!,
           replyToId,
         );

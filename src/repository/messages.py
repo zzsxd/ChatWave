@@ -11,7 +11,11 @@ from models import (
     PinnedMessages,
 )
 from database import session
-from schemas import CreateTextMessageDB, CreateMediaMessageDB
+from schemas import (
+    CreateEncryptedMessageDB,
+    CreateMediaMessageDB,
+    CreateTextMessageDB,
+)
 from utilities import (
     MessagesStatus,
     MessagesTypes,
@@ -118,7 +122,7 @@ async def reserve_message_id() -> int:
 async def insert_text_message_with_notifications(
     sender_id: int,
     conversation_id: int,
-    message_data: CreateTextMessageDB,
+    message_data: CreateTextMessageDB | CreateEncryptedMessageDB,
 ) -> tuple[int, bool]:
     async with session() as cursor:
         values = {

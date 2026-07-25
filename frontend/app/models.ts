@@ -41,6 +41,7 @@ export type Message = {
   replyToId?: number;
   messageType?: ApiMessage["type"];
   mediaMimeType?: string;
+  encrypted?: boolean;
   callEvent?: {
     callId: number;
     outcome: "completed" | "missed" | "rejected" | "cancelled";
@@ -198,6 +199,7 @@ export const mapApiMessage = (
     replyToId: message.reply_to_id ?? undefined,
     messageType: message.type,
     mediaMimeType: message.file_content_type ?? undefined,
+    encrypted: Boolean(message.encrypted_content),
     callEvent,
     reactions: Object.entries(
       message.reactions.reduce<Record<string, { count: number; reacted: boolean }>>(

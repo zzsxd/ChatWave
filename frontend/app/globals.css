@@ -3712,6 +3712,73 @@ input:focus-visible {
   font-weight: 700;
 }
 
+.security-settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.e2ee-recovery-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.e2ee-recovery-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--text-soft);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.e2ee-recovery-card input {
+  width: 100%;
+  height: 43px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+  outline: none;
+  background: rgba(0, 0, 0, 0.14);
+  color: var(--text);
+}
+
+.recovery-status {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.generated-recovery-key {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(67, 223, 155, 0.24);
+  border-radius: 12px;
+  background: rgba(67, 223, 155, 0.07);
+}
+
+.generated-recovery-key code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 10px;
+  line-height: 1.5;
+  user-select: all;
+}
+
+.generated-recovery-key small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.message-encrypted {
+  display: inline-flex;
+  color: #64e4ad;
+}
+
 .new-conversation-modal .creation-tabs {
   margin: 22px 0 18px;
 }

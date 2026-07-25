@@ -27,6 +27,8 @@ from .messages import (
     CreateTextMessage,
     UpdateTextMessage,
     CreateTextMessageDB,
+    CreateEncryptedMessage,
+    CreateEncryptedMessageDB,
     CreateMediaMessage,
     CreateMediaMessageDB,
     GetMessage,
@@ -58,4 +60,15 @@ from .calls import (
     SessionDescription,
     StartCall,
     parse_call_signal,
+)
+from .e2ee import (
+    DeviceId,
+    DeviceSecret,
+    EventType,
+    KeysClaim,
+    KeysQuery,
+    KeysUpload,
+    KeyBackup,
+    ToDeviceMessages,
+    TransactionId,
 )

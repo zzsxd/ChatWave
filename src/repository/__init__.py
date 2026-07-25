@@ -96,3 +96,18 @@ from .calls import (
     select_call_participants,
     transition_call_status,
 )
+from .e2ee import (
+    acknowledge_to_device_events,
+    claim_e2ee_one_time_keys,
+    insert_to_device_events,
+    revoke_e2ee_device,
+    select_e2ee_device_keys,
+    select_e2ee_devices,
+    select_one_time_key_counts,
+    select_reachable_user_ids,
+    select_shared_user_ids,
+    select_to_device_events,
+    upload_e2ee_keys,
+    upsert_e2ee_key_backup,
+    select_e2ee_key_backup,
+)

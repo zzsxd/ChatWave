@@ -10,10 +10,16 @@ import {
 
 const DEVICE_ID_KEY = "chatwave_e2ee_device_id";
 const STORE_SECRET_KEY = "chatwave_e2ee_store_secret";
+const DEVICE_SECRET_KEY = "chatwave_e2ee_device_secret";
 
 let wasmReady: Promise<void> | null = null;
 let activeMachine:
-  | { accountId: number; machine: OlmMachine; deviceId: string }
+  | {
+      accountId: number;
+      machine: OlmMachine;
+      deviceId: string;
+      deviceSecret: string;
+    }
   | null = null;
 
 function randomBase64Url(bytes: number) {
@@ -56,13 +62,14 @@ export async function getCryptoMachine(accountId: number) {
 
   const deviceId = persistentSecret(DEVICE_ID_KEY, 16).toUpperCase();
   const storeSecret = persistentSecret(STORE_SECRET_KEY, 32);
+  const deviceSecret = persistentSecret(DEVICE_SECRET_KEY, 32);
   const machine = await OlmMachine.initialize(
     new UserId(cryptoUserId(accountId)),
     new DeviceId(deviceId),
     `chatwave-e2ee-${accountId}-${deviceId}`,
     storeSecret,
   );
-  activeMachine = { accountId, machine, deviceId };
+  activeMachine = { accountId, machine, deviceId, deviceSecret };
   return activeMachine;
 }
 
@@ -70,4 +77,3 @@ export function closeCryptoMachine() {
   activeMachine?.machine.close();
   activeMachine = null;
 }
-

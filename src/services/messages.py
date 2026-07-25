@@ -36,6 +36,8 @@ from repository import (
 )
 from schemas import (
     CreateTextMessageDB,
+    CreateEncryptedMessage,
+    CreateEncryptedMessageDB,
     CreateMediaMessage,
     CreateMediaMessageDB,
     GetMessage,
@@ -115,6 +117,40 @@ async def create_text_message(
         await publish_message_created(new_message_obj)
 
     return new_message_obj
+
+
+async def create_encrypted_message(
+    sender_id: int,
+    conversation_id: int,
+    message_data: CreateEncryptedMessage,
+) -> GetMessage:
+    await validate_user_in_conversation(
+        user_id=sender_id,
+        conversation_id=conversation_id,
+    )
+    await _validate_reply(conversation_id, message_data.reply_to_id)
+    encrypted_message = CreateEncryptedMessageDB(
+        status=MessagesStatus.SENT,
+        type=MessagesTypes.TEXT,
+        encryption_algorithm=message_data.algorithm,
+        encrypted_content=message_data.encrypted_content,
+        client_message_id=message_data.client_message_id,
+        reply_to_id=message_data.reply_to_id,
+    )
+    message_id, created = await insert_text_message_with_notifications(
+        sender_id=sender_id,
+        conversation_id=conversation_id,
+        message_data=encrypted_message,
+    )
+    raw_message = await select_message(message_id=message_id)
+    message = await sqlalchemy_to_pydantic(
+        sqlalchemy_model=raw_message,
+        pydantic_model=GetMessage,
+    )
+    await _hydrate_reactions([message])
+    if created:
+        await publish_message_created(message)
+    return message
 
 
 async def create_media_message(sender_id: int, conversation_id: int, content_data: CreateMediaMessage) -> GetMessage:
@@ -215,6 +251,9 @@ async def update_user_message(
     content: str,
 ) -> GetMessage:
     await validate_user_is_message_owner(user_id=sender_id, message_id=message_id)
+    existing = await select_message(message_id=message_id)
+    if existing is None or existing.encrypted_content is not None:
+        raise AccessDeniedError()
 
     await update_message(
         message_id=message_id,

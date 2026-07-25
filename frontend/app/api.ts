@@ -20,9 +20,25 @@ export type ApiMessage = {
   original_file_name: string | null;
   client_message_id: string | null;
   reply_to_id: number | null;
+  encryption_algorithm: string | null;
+  encrypted_content: Record<string, unknown> | null;
   reactions: Array<{ user_id: number; emoji: string }>;
   created_at: string | null;
   updated_at: string | null;
+};
+
+export type E2EESyncResponse = {
+  next_batch: string;
+  to_device: { events: Array<Record<string, unknown>> };
+  device_lists: { changed: string[]; left: string[] };
+  device_one_time_keys_count: Record<string, number>;
+  device_unused_fallback_key_types: string[];
+};
+
+export type E2EEKeyBackup = {
+  version: number;
+  encrypted_data: string;
+  updated_at: string;
 };
 
 export type ApiUnreadMessage = {
@@ -407,6 +423,101 @@ class ChatWaveApi {
         reply_to_id: replyToId,
       }),
     });
+  }
+
+  sendEncrypted(
+    conversationId: number,
+    encryptedContent: Record<string, unknown>,
+    clientMessageId: string,
+    replyToId?: number,
+  ) {
+    return this.request<ApiMessage>(
+      `/conversations/${conversationId}/encrypted`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          algorithm: "m.megolm.v1.aes-sha2",
+          encrypted_content: encryptedContent,
+          client_message_id: clientMessageId,
+          reply_to_id: replyToId,
+        }),
+      },
+    );
+  }
+
+  e2eeUpload(
+    deviceId: string,
+    deviceSecret: string,
+    body: Record<string, unknown>,
+  ) {
+    return this.request<Record<string, unknown>>("/e2ee/keys/upload", {
+      method: "POST",
+      headers: {
+        "X-ChatWave-Device-ID": deviceId,
+        "X-ChatWave-Device-Secret": deviceSecret,
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  e2eeQuery(body: Record<string, unknown>) {
+    return this.request<Record<string, unknown>>("/e2ee/keys/query", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  e2eeClaim(body: Record<string, unknown>) {
+    return this.request<Record<string, unknown>>("/e2ee/keys/claim", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  e2eeSendToDevice(
+    eventType: string,
+    transactionId: string,
+    body: Record<string, unknown>,
+  ) {
+    return this.request<Record<string, never>>(
+      `/e2ee/sendToDevice/${encodeURIComponent(eventType)}/${encodeURIComponent(transactionId)}`,
+      { method: "PUT", body: JSON.stringify(body) },
+    );
+  }
+
+  e2eeSync(deviceId: string, deviceSecret: string, since = "0") {
+    const params = new URLSearchParams({ since, limit: "500" });
+    return this.request<E2EESyncResponse>(`/e2ee/sync?${params}`, {
+      headers: {
+        "X-ChatWave-Device-ID": deviceId,
+        "X-ChatWave-Device-Secret": deviceSecret,
+      },
+    });
+  }
+
+  e2eeAcknowledge(
+    deviceId: string,
+    deviceSecret: string,
+    upTo: string,
+  ) {
+    return this.request<void>(`/e2ee/sync/${encodeURIComponent(upTo)}/ack`, {
+      method: "POST",
+      headers: {
+        "X-ChatWave-Device-ID": deviceId,
+        "X-ChatWave-Device-Secret": deviceSecret,
+      },
+    });
+  }
+
+  e2eeSaveBackup(encryptedData: string) {
+    return this.request<void>("/e2ee/backup", {
+      method: "PUT",
+      body: JSON.stringify({ version: 1, encrypted_data: encryptedData }),
+    });
+  }
+
+  e2eeBackup() {
+    return this.request<E2EEKeyBackup>("/e2ee/backup");
   }
 
   sendMedia(

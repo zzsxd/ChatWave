@@ -1,4 +1,5 @@
-from typing import Annotated, Literal, Optional
+import json
+from typing import Annotated, Any, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 from uuid import UUID
@@ -36,6 +37,44 @@ class CreateTextMessageDB(BaseModel):
     content: str
     status: MessagesStatus
     type: MessagesTypes
+    client_message_id: UUID | None = None
+    reply_to_id: int | None = None
+
+
+class CreateEncryptedMessage(BaseModel):
+    algorithm: Literal["m.megolm.v1.aes-sha2"]
+    encrypted_content: dict[str, Any]
+    client_message_id: UUID | None = None
+    reply_to_id: Annotated[
+        Optional[int],
+        Field(None, ge=1, le=2_147_483_647),
+    ]
+
+    @field_validator("encrypted_content")
+    @classmethod
+    def validate_encrypted_content(cls, value: dict[str, Any]):
+        required = {
+            "algorithm",
+            "ciphertext",
+            "device_id",
+            "sender_key",
+            "session_id",
+        }
+        if not required.issubset(value):
+            raise ValueError("Incomplete encrypted message")
+        if value.get("algorithm") != "m.megolm.v1.aes-sha2":
+            raise ValueError("Unsupported encrypted message algorithm")
+        if len(json.dumps(value, separators=(",", ":"))) > 65_536:
+            raise ValueError("Encrypted message is too large")
+        return value
+
+
+class CreateEncryptedMessageDB(BaseModel):
+    content: None = None
+    status: MessagesStatus
+    type: MessagesTypes
+    encryption_algorithm: str
+    encrypted_content: dict[str, Any]
     client_message_id: UUID | None = None
     reply_to_id: int | None = None
 
@@ -84,6 +123,8 @@ class GetMessage(BaseModel):
     original_file_name: Optional[str] = None
     client_message_id: UUID | None = None
     reply_to_id: Optional[int] = None
+    encryption_algorithm: Optional[str] = None
+    encrypted_content: Optional[dict[str, Any]] = None
     reactions: list[MessageReaction] = Field(default_factory=list)
     created_at: Optional[datetime]
     updated_at: Optional[datetime]

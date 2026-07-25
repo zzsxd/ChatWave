@@ -1,4 +1,5 @@
-from sqlalchemy import Index, ForeignKey, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, Index, ForeignKey, String, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import OrmBase
@@ -41,6 +42,11 @@ class Messages(OrmBase):
         ForeignKey("messages.id", ondelete="SET NULL"),
         nullable=True,
     )
+    encryption_algorithm: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    encrypted_content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime_auto_set]
     updated_at: Mapped[datetime_auto_update]
 
@@ -62,6 +68,12 @@ class Messages(OrmBase):
             "sender_id",
             "client_message_id",
             name="uq_messages_sender_client_id",
+        ),
+        CheckConstraint(
+            "(encryption_algorithm IS NULL AND encrypted_content IS NULL) OR "
+            "(encryption_algorithm IS NOT NULL AND encrypted_content IS NOT "
+            "NULL AND content IS NULL)",
+            name="ck_messages_encrypted_payload",
         ),
     )
 

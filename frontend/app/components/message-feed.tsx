@@ -4,6 +4,7 @@ import { CSSProperties } from "react";
 import {
   Check,
   CheckCheck,
+  LockKeyhole,
   MessageCircleMore,
   MoreHorizontal,
   Pencil,
@@ -165,6 +166,15 @@ export function MessageFeed({
                 {message.pending && <small>отправляется</small>}
                 {message.failed && <small>не отправлено</small>}
                 {message.edited && <small>изменено</small>}
+                {message.encrypted && (
+                  <span
+                    className="message-encrypted"
+                    title="Текст защищён сквозным шифрованием"
+                    aria-label="Сквозное шифрование"
+                  >
+                    <LockKeyhole size={11} />
+                  </span>
+                )}
                 {message.own && message.status && !message.pending && (
                   <span
                     className={`message-status status-${message.status}`}
@@ -268,7 +278,7 @@ export function MessageFeed({
               !message.pending &&
               !message.failed ? (
                 <>
-                  {message.own && (
+                  {message.own && !message.encrypted && (
                   <button
                     aria-label="Изменить сообщение"
                     onClick={() => onEdit(message)}

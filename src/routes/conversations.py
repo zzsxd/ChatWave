@@ -29,6 +29,7 @@ from services import (
     delete_all_messages,
     create_media_message,
     create_text_message,
+    create_encrypted_message,
     add_unread_messages,
     fetch_last_message,
     fetch_conversation_media,
@@ -44,7 +45,8 @@ from schemas import (
     GetConversations,
     Avatar,
     CreateMediaMessage,
-    CreateTextMessage
+    CreateTextMessage,
+    CreateEncryptedMessage,
 )
 from storage import FileManager
 
@@ -202,6 +204,23 @@ async def send_text_message(
         reply_to_id=request.reply_to_id,
     )
     return new_message_obj
+
+
+@conversations_router.post(
+    "/{conversation_id}/encrypted",
+    status_code=status.HTTP_200_OK,
+    response_model=GetMessage,
+)
+async def send_encrypted_message(
+    current_user_id: Annotated[int, Depends(verify_token)],
+    conversation_id: int,
+    request: CreateEncryptedMessage = Body(),
+):
+    return await create_encrypted_message(
+        sender_id=current_user_id,
+        conversation_id=conversation_id,
+        message_data=request,
+    )
 
 
 @conversations_router.post("/{conversation_id}/media", status_code=status.HTTP_200_OK, response_model=GetMessage)
