@@ -183,16 +183,23 @@ class ChatWaveApi {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const response = await fetch(`${this.apiUrl}${path}`, {
-      ...init,
-      headers: {
-        ...(init.body instanceof FormData
-          ? {}
-          : { "Content-Type": "application/json" }),
-        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
-        ...init.headers,
-      },
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.apiUrl}${path}`, {
+        ...init,
+        headers: {
+          ...(init.body instanceof FormData
+            ? {}
+            : { "Content-Type": "application/json" }),
+          ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+          ...init.headers,
+        },
+      });
+    } catch {
+      throw new Error(
+        "Не удалось подключиться к серверу. Проверьте интернет и повторите попытку.",
+      );
+    }
 
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
@@ -204,6 +211,11 @@ class ChatWaveApi {
           : Array.isArray(detail)
             ? detail[0]?.msg
             : null;
+      if (response.status === 429) {
+        throw new Error(
+          "Слишком много попыток. Подождите немного и повторите.",
+        );
+      }
       throw new Error(message ?? `Ошибка API: ${response.status}`);
     }
     if (response.status === 204 || response.headers.get("content-length") === "0") {
@@ -215,11 +227,21 @@ class ChatWaveApi {
   async login(username: string, password: string, serverUrl?: string) {
     if (serverUrl) this.configureServer(serverUrl);
     const body = new URLSearchParams({ username, password });
-    const response = await fetch(`${this.apiUrl}/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body,
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.apiUrl}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+    } catch {
+      throw new Error(
+        "Не удалось подключиться к серверу. Проверьте интернет и повторите попытку.",
+      );
+    }
+    if (response.status === 429) {
+      throw new Error("Слишком много попыток входа. Подождите минуту.");
+    }
     if (!response.ok) throw new Error("Неверный логин или пароль");
     const payload = (await response.json()) as { access_token: string };
     this.token = payload.access_token;

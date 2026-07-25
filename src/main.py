@@ -98,6 +98,8 @@ app = FastAPI(
 )
 
 
+app.add_middleware(RequestBodyLimitMiddleware)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=generic_settings.API_CORS_ALLOW_ORIGINS,
@@ -105,9 +107,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Added last so security headers also cover early CORS/rate-limit responses.
 app.add_middleware(SecurityHeadersMiddleware)
-app.add_middleware(RateLimitMiddleware)
-app.add_middleware(RequestBodyLimitMiddleware)
 
 
 @app.get("/health", include_in_schema=False)

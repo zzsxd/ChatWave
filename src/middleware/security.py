@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import logging
 import re
 import time
@@ -111,9 +112,51 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     pass
         return f"ip:{client_host}"
 
+    @staticmethod
+    def _client_host(
+        peer_host: str,
+        real_ip_header: str | None,
+        forwarded_for_header: str | None,
+        trusted_proxy_cidrs: list[str] | None = None,
+    ) -> str:
+        """Resolve the client only when the direct peer is a trusted proxy."""
+        cidrs = (
+            generic_settings.TRUSTED_PROXY_CIDRS
+            if trusted_proxy_cidrs is None
+            else trusted_proxy_cidrs
+        )
+        try:
+            peer_ip = ipaddress.ip_address(peer_host)
+            trusted = any(
+                peer_ip in ipaddress.ip_network(cidr, strict=False)
+                for cidr in cidrs
+            )
+        except ValueError:
+            return peer_host
+        if not trusted:
+            return peer_ip.compressed
+
+        candidates = [real_ip_header]
+        if forwarded_for_header:
+            # Nginx appends the address it observed at the right-hand side.
+            candidates.append(forwarded_for_header.rsplit(",", 1)[-1].strip())
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                return ipaddress.ip_address(candidate.strip()).compressed
+            except ValueError:
+                continue
+        return peer_ip.compressed
+
     async def dispatch(self, request: Request, call_next):
         authorization = request.headers.get("authorization")
-        client_host = request.client.host if request.client else "unknown"
+        peer_host = request.client.host if request.client else "unknown"
+        client_host = self._client_host(
+            peer_host,
+            request.headers.get("x-real-ip"),
+            request.headers.get("x-forwarded-for"),
+        )
         identity_source = self._identity(authorization, client_host)
         limit, window = self._limit_for(request.url.path)
         bucket = int(time.time()) // window

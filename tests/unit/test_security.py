@@ -82,3 +82,30 @@ def test_valid_token_rate_limit_identity_is_stable_per_user():
 
     assert RateLimitMiddleware._identity(f"Bearer {first}", "192.0.2.1") == "user:42"
     assert RateLimitMiddleware._identity(f"Bearer {second}", "192.0.2.2") == "user:42"
+
+
+def test_rate_limit_uses_real_ip_only_for_trusted_proxy():
+    assert RateLimitMiddleware._client_host(
+        "172.19.0.6",
+        "203.0.113.42",
+        "198.51.100.7, 203.0.113.42",
+        ["172.16.0.0/12"],
+    ) == "203.0.113.42"
+
+
+def test_rate_limit_ignores_spoofed_headers_from_untrusted_peer():
+    assert RateLimitMiddleware._client_host(
+        "198.51.100.9",
+        "203.0.113.42",
+        "203.0.113.42",
+        ["172.16.0.0/12"],
+    ) == "198.51.100.9"
+
+
+def test_rate_limit_falls_back_when_proxy_header_is_invalid():
+    assert RateLimitMiddleware._client_host(
+        "172.19.0.6",
+        "not-an-ip",
+        "also-invalid",
+        ["172.16.0.0/12"],
+    ) == "172.19.0.6"

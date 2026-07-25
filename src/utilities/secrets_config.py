@@ -136,6 +136,10 @@ class GenericSettings(BaseSettings):
     RATE_LIMIT_LOGIN_PER_MINUTE: int = 10
     RATE_LIMIT_SIGNUP_PER_HOUR: int = 5
     RATE_LIMIT_WEBSOCKET_HANDSHAKES_PER_MINUTE: int = 30
+    TRUSTED_PROXY_CIDRS: list[str] = [
+        "127.0.0.0/8",
+        "::1/128",
+    ]
     MAX_WEBSOCKETS_PER_USER: int = 12
     MAX_UNREAD_PAGE_SIZE: int = 100
     TURN_SHARED_SECRET: str | None = None
