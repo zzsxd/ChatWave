@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
@@ -81,3 +82,58 @@ def test_typing_signal_rejects_unknown_fields_and_invalid_conversations():
 )
 def test_effective_status_requires_all_recipients(statuses, expected):
     assert message_events._effective_status(statuses) == expected
+
+
+async def test_read_batch_marks_messages_and_publishes_one_status_event(
+    monkeypatch,
+):
+    mark_read = AsyncMock()
+    publish = AsyncMock()
+    monkeypatch.setattr(
+        message_events,
+        "validate_user_in_conversation",
+        AsyncMock(),
+    )
+    monkeypatch.setattr(
+        message_events,
+        "select_messages",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(id=91, conversation_id=12, sender_id=4),
+                SimpleNamespace(id=92, conversation_id=12, sender_id=7),
+                SimpleNamespace(id=93, conversation_id=99, sender_id=4),
+            ]
+        ),
+    )
+    monkeypatch.setattr(message_events, "mark_message_receipts_read", mark_read)
+    monkeypatch.setattr(
+        message_events,
+        "select_receipts_for_messages",
+        AsyncMock(
+            return_value=[
+                (91, 7, MessagesStatus.READ),
+                (92, 4, MessagesStatus.READ),
+            ]
+        ),
+    )
+    monkeypatch.setattr(message_events, "_publish_to_members", publish)
+
+    await message_events._handle_receipt_batch(
+        11,
+        message_events.ReceiptBatchSignal(
+            type="message.read_batch",
+            conversation_id=12,
+            message_ids=[91, 92, 93, 91],
+        ),
+    )
+
+    mark_read.assert_awaited_once_with(11, [91, 92])
+    publish.assert_awaited_once()
+    assert publish.await_args.args[1] == {
+        "type": "message.statuses",
+        "conversation_id": 12,
+        "statuses": [
+            {"message_id": 91, "status": MessagesStatus.READ.value},
+            {"message_id": 92, "status": MessagesStatus.READ.value},
+        ],
+    }

@@ -1,0 +1,96 @@
+{
+  "name": "chatwave-desktop",
+  "version": "1.4.2",
+  "private": true,
+  "description": "ChatWave desktop client for Windows and macOS",
+  "main": "src/main.cjs",
+  "author": "ChatWave",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "start": "electron .",
+    "pack:win": "npm run pack:win:x64",
+    "pack:win:x64": "electron-builder --win dir --x64",
+    "pack:win:arm64": "electron-builder --win dir --arm64",
+    "build:win": "npm run build:win:x64",
+    "build:win:x64": "electron-builder --win nsis --x64",
+    "build:win:arm64": "electron-builder --win nsis --arm64",
+    "build:portable": "npm run build:portable:x64",
+    "build:portable:x64": "electron-builder --win portable --x64 --config.win.artifactName='ChatWave-Portable-${version}-${arch}.${ext}'",
+    "build:portable:arm64": "electron-builder --win portable --arm64 --config.win.artifactName='ChatWave-Portable-${version}-${arch}.${ext}'",
+    "pack:mac": "electron-builder --mac dir",
+    "build:mac": "electron-builder --mac dmg zip"
+  },
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "io.chatwave.desktop",
+    "productName": "ChatWave",
+    "asar": true,
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "zzsxd",
+        "repo": "ChatWave"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "ChatWave-Setup-${version}-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.social-networking",
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "artifactName": "ChatWave-${version}-${arch}.${ext}",
+      "extendInfo": {
+        "NSCameraUsageDescription": "ChatWave использует камеру для видеозвонков.",
+        "NSMicrophoneUsageDescription": "ChatWave использует микрофон для голосовых и видеозвонков.",
+        "NSAudioCaptureUsageDescription": "ChatWave использует аудиозахват для демонстрации экрана со звуком.",
+        "NSScreenCaptureUsageDescription": "ChatWave использует запись экрана для демонстрации собеседникам.",
+        "NSHighResolutionCapable": true
+      }
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ChatWave",
+      "deleteAppDataOnUninstall": false
+    }
+  },
+  "dependencies": {
+    "electron-updater": "6.6.2"
+  }
+}

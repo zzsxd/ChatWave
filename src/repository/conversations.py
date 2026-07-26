@@ -125,6 +125,58 @@ async def create_group_conversation_atomic(
         return conversation_id
 
 
+async def get_or_create_saved_conversation_atomic(user_id: int) -> int:
+    marker = "__chatwave_saved__"
+    async with session() as cursor:
+        await cursor.execute(
+            select(func.pg_advisory_xact_lock((1 << 31) | user_id))
+        )
+        result = await cursor.execute(
+            select(Conversations.id)
+            .join(
+                ConversationMembers,
+                ConversationMembers.conversation_id == Conversations.id,
+            )
+            .filter(
+                Conversations.creator_id == user_id,
+                Conversations.type == ConversationTypes.GROUP,
+                Conversations.description == marker,
+            )
+            .group_by(Conversations.id)
+            .having(
+                func.count(ConversationMembers.user_id) == 1,
+                func.count(ConversationMembers.user_id)
+                .filter(ConversationMembers.user_id == user_id)
+                == 1,
+            )
+            .limit(1)
+        )
+        existing_id = result.scalar()
+        if existing_id is not None:
+            return existing_id
+
+        result = await cursor.execute(
+            insert(Conversations)
+            .values(
+                creator_id=user_id,
+                type=ConversationTypes.GROUP,
+                name="Избранное",
+                description=marker,
+            )
+            .returning(Conversations.id)
+        )
+        conversation_id = result.scalar_one()
+        await cursor.execute(
+            insert(ConversationMembers).values(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                role=ConversationMemberRoles.CREATOR,
+            )
+        )
+        await cursor.commit()
+        return conversation_id
+
+
 async def select_conversation_by_id(conversation_id: int) -> Conversations:
     async with session() as cursor:
         query = (

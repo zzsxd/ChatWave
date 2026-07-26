@@ -60,3 +60,36 @@ export function optimisticMediaMessage(
     },
   };
 }
+
+export function reconcileOptimisticMessage(
+  current: Message[],
+  optimisticId: number,
+  serverMessage: Message,
+): Message[] {
+  let reconciled = false;
+  const next = current.flatMap((message) => {
+    const sameMessage =
+      message.id === optimisticId ||
+      message.id === serverMessage.id ||
+      Boolean(
+        serverMessage.clientMessageId &&
+          message.clientMessageId === serverMessage.clientMessageId,
+      );
+    if (!sameMessage) return [message];
+    if (reconciled) return [];
+    reconciled = true;
+    return [
+      {
+        ...message,
+        ...serverMessage,
+        attachment: serverMessage.attachment ?? message.attachment,
+        pending: false,
+        failed: false,
+        retry: undefined,
+      },
+    ];
+  });
+
+  if (!reconciled) next.push(serverMessage);
+  return next;
+}

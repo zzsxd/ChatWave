@@ -8,7 +8,13 @@ import {
   Download,
   KeyRound,
   History,
+  Headphones,
   Save,
+  MonitorCog,
+  ImagePlus,
+  RefreshCw,
+  Mic,
+  Video,
   Trash2,
   UserRound,
   X,
@@ -20,8 +26,17 @@ import {
   localRecoveryKey,
   restoreRoomKeys,
 } from "../e2ee/client";
+import {
+  getMediaDevicePreferences,
+  saveMediaDevicePreferences,
+  type MediaDevicePreferences,
+} from "../media-preferences";
+import {
+  loadChatBackground,
+  saveChatBackground,
+} from "../chat-background";
 
-type ProfileTab = "profile" | "security";
+type ProfileTab = "profile" | "security" | "appearance" | "desktop";
 
 export function ProfileSettingsModal({
   user,
@@ -56,7 +71,19 @@ export function ProfileSettingsModal({
   const [hasLocalRecovery, setHasLocalRecovery] = useState(
     () => Boolean(localRecoveryKey(user.id)),
   );
+  const [desktopSettings, setDesktopSettings] =
+    useState<ChatWaveDesktopSettings | null>(null);
+  const [desktopUpdate, setDesktopUpdate] =
+    useState<ChatWaveDesktopUpdateState | null>(null);
+  const [mediaPreferences, setMediaPreferences] =
+    useState<MediaDevicePreferences>(() => getMediaDevicePreferences());
+  const [mediaDevices, setMediaDevices] = useState<MediaDeviceInfo[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
+  const backgroundInput = useRef<HTMLInputElement>(null);
+  const [backgroundPreview, setBackgroundPreview] = useState<string | null>(
+    null,
+  );
+  const [backgroundType, setBackgroundType] = useState("");
 
   useEffect(
     () => () => {
@@ -64,6 +91,105 @@ export function ProfileSettingsModal({
     },
     [avatarPreview],
   );
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl: string | null = null;
+    void loadChatBackground(user.id)
+      .then((background) => {
+        if (!active || !background) return;
+        objectUrl = URL.createObjectURL(background.blob);
+        setBackgroundPreview(objectUrl);
+        setBackgroundType(background.mediaType);
+      })
+      .catch(() => {
+        if (active) setError("Не удалось загрузить фон чата");
+      });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [user.id]);
+
+  const updateBackground = async (file: File | null) => {
+    setError("");
+    if (
+      file &&
+      !file.type.startsWith("image/") &&
+      !file.type.startsWith("video/")
+    ) {
+      setError("Выберите изображение, GIF или видео");
+      return;
+    }
+    if (file && file.size > 50 * 1024 * 1024) {
+      setError("Фон должен быть меньше 50 МБ");
+      return;
+    }
+    try {
+      await saveChatBackground(user.id, file);
+      setBackgroundPreview((current) => {
+        if (current?.startsWith("blob:")) URL.revokeObjectURL(current);
+        return file ? URL.createObjectURL(file) : null;
+      });
+      setBackgroundType(file?.type ?? "");
+      setSuccess(file ? "Фон чата обновлён" : "Установлен стандартный фон");
+    } catch {
+      setError("Браузер не разрешил сохранить фон на этом устройстве");
+    }
+  };
+
+  const refreshDevices = async () => {
+    try {
+      setMediaDevices(await navigator.mediaDevices.enumerateDevices());
+    } catch {
+      setError("Не удалось получить список медиоустройств");
+    }
+  };
+
+  useEffect(() => {
+    if (
+      tab !== "desktop" ||
+      !window.chatWaveDesktop?.getDesktopSettings
+    ) {
+      return;
+    }
+    void window.chatWaveDesktop
+      .getDesktopSettings()
+      .then(setDesktopSettings)
+      .catch(() => setError("Не удалось загрузить настройки приложения"));
+    void window.chatWaveDesktop.getUpdateStatus?.().then(setDesktopUpdate);
+    const stopUpdateListener =
+      window.chatWaveDesktop.onUpdateState?.(setDesktopUpdate);
+    void Promise.resolve().then(refreshDevices);
+    const update = () => void refreshDevices();
+    navigator.mediaDevices.addEventListener("devicechange", update);
+    return () => {
+      stopUpdateListener?.();
+      navigator.mediaDevices.removeEventListener("devicechange", update);
+    };
+  }, [tab]);
+
+  const updateDesktopSettings = async (
+    changes: Partial<ChatWaveDesktopSettings>,
+  ) => {
+    if (!window.chatWaveDesktop?.updateDesktopSettings) return;
+    try {
+      const updated =
+        await window.chatWaveDesktop.updateDesktopSettings(changes);
+      setDesktopSettings(updated);
+    } catch {
+      setError("Не удалось сохранить настройки приложения");
+    }
+  };
+
+  const updateMediaPreferences = (
+    changes: Partial<MediaDevicePreferences>,
+  ) => {
+    const updated = { ...mediaPreferences, ...changes };
+    setMediaPreferences(updated);
+    saveMediaDevicePreferences(updated);
+    setSuccess("Устройство сохранено для следующих звонков");
+  };
 
   const refreshProfile = async () => {
     const updated = await chatWaveApi.me();
@@ -224,6 +350,29 @@ export function ProfileSettingsModal({
     }
   };
 
+  const copyRecoveryKey = async () => {
+    if (!generatedRecoveryKey) return;
+    try {
+      await navigator.clipboard.writeText(generatedRecoveryKey);
+    } catch {
+      const field = document.createElement("textarea");
+      field.value = generatedRecoveryKey;
+      field.setAttribute("readonly", "");
+      field.style.position = "fixed";
+      field.style.opacity = "0";
+      document.body.appendChild(field);
+      field.select();
+      const copied = document.execCommand("copy");
+      field.remove();
+      if (!copied) {
+        setError("Не удалось скопировать ключ. Выделите его вручную.");
+        return;
+      }
+    }
+    setError("");
+    setSuccess("Recovery key скопирован");
+  };
+
   return (
     <div className="modal-backdrop profile-settings-backdrop" onMouseDown={onClose}>
       <section
@@ -267,6 +416,31 @@ export function ProfileSettingsModal({
               <KeyRound size={17} />
               Безопасность
             </button>
+            <button
+              className={tab === "appearance" ? "active" : ""}
+              onClick={() => {
+                setTab("appearance");
+                setError("");
+                setSuccess("");
+              }}
+            >
+              <ImagePlus size={17} />
+              Оформление
+            </button>
+            {typeof window !== "undefined" &&
+              window.chatWaveDesktop?.getDesktopSettings && (
+              <button
+                className={tab === "desktop" ? "active" : ""}
+                onClick={() => {
+                  setTab("desktop");
+                  setError("");
+                  setSuccess("");
+                }}
+              >
+                <MonitorCog size={17} />
+                Приложение
+              </button>
+            )}
           </nav>
 
           <div className="profile-settings-content">
@@ -386,7 +560,7 @@ export function ProfileSettingsModal({
                   </button>
                 </form>
               </>
-            ) : (
+            ) : tab === "security" ? (
               <div className="security-settings-stack">
               <section className="e2ee-recovery-card">
                 <div className="security-note">
@@ -422,12 +596,7 @@ export function ProfileSettingsModal({
                     <code>{generatedRecoveryKey}</code>
                     <button
                       type="button"
-                      onClick={() => {
-                        void navigator.clipboard.writeText(
-                          generatedRecoveryKey,
-                        );
-                        setSuccess("Recovery key скопирован");
-                      }}
+                      onClick={() => void copyRecoveryKey()}
                     >
                       <Copy size={15} /> Копировать
                     </button>
@@ -507,6 +676,267 @@ export function ProfileSettingsModal({
                   {loading ? "Обновляем…" : "Изменить пароль"}
                 </button>
               </form>
+              </div>
+            ) : tab === "appearance" ? (
+              <section className="chat-background-settings">
+                <div className="security-note">
+                  <ImagePlus size={20} />
+                  <div>
+                    <strong>Фон сообщений</strong>
+                    <span>
+                      Поддерживаются изображения, GIF и зацикленное видео.
+                      Файл хранится только на этом устройстве.
+                    </span>
+                  </div>
+                </div>
+                <div className="chat-background-preview">
+                  {backgroundPreview ? (
+                    backgroundType.startsWith("video/") ? (
+                      <video
+                        src={backgroundPreview}
+                        autoPlay
+                        muted
+                        loop
+                        playsInline
+                      />
+                    ) : (
+                      <img src={backgroundPreview} alt="" />
+                    )
+                  ) : (
+                    <span>Стандартный фон ChatWave</span>
+                  )}
+                </div>
+                <div className="chat-background-actions">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => backgroundInput.current?.click()}
+                  >
+                    <ImagePlus size={16} />
+                    Выбрать фон
+                  </button>
+                  {backgroundPreview && (
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() => void updateBackground(null)}
+                    >
+                      <Trash2 size={15} />
+                      Удалить
+                    </button>
+                  )}
+                </div>
+                <input
+                  ref={backgroundInput}
+                  type="file"
+                  accept="image/*,video/mp4,video/webm"
+                  hidden
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0] ?? null;
+                    event.currentTarget.value = "";
+                    if (file) void updateBackground(file);
+                  }}
+                />
+              </section>
+            ) : (
+              <div className="desktop-settings-stack">
+                {window.chatWaveDesktop?.getUpdateStatus && (
+                <section className="desktop-settings-card desktop-update-card">
+                  <div className="security-note">
+                    <RefreshCw size={20} />
+                    <div>
+                      <strong>Обновление ChatWave</strong>
+                      <span>
+                        Текущая версия:{" "}
+                        {desktopUpdate?.currentVersion ?? "не определена"}
+                      </span>
+                    </div>
+                  </div>
+                  {desktopUpdate?.status === "downloading" && (
+                    <div className="desktop-update-progress">
+                      <span style={{ width: `${desktopUpdate.progress}%` }} />
+                      <small>{desktopUpdate.progress}%</small>
+                    </div>
+                  )}
+                  {desktopUpdate?.status === "downloaded" ? (
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() =>
+                        void window.chatWaveDesktop?.installUpdate?.()
+                      }
+                    >
+                      Установить и перезапустить
+                    </button>
+                  ) : desktopUpdate?.status === "available" ? (
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() =>
+                        void window.chatWaveDesktop?.downloadUpdate?.()
+                      }
+                    >
+                      Скачать версию {desktopUpdate.availableVersion}
+                    </button>
+                  ) : desktopUpdate?.status !== "downloading" ? (
+                    <button
+                      type="button"
+                      disabled={desktopUpdate?.status === "checking"}
+                      onClick={() =>
+                        void window.chatWaveDesktop?.checkForUpdates?.()
+                      }
+                    >
+                      <RefreshCw
+                        className={
+                          desktopUpdate?.status === "checking" ? "spin" : ""
+                        }
+                        size={16}
+                      />
+                      {desktopUpdate?.status === "checking"
+                        ? "Проверяем…"
+                        : desktopUpdate?.status === "current"
+                          ? "Установлена последняя версия"
+                          : "Проверить обновления"}
+                    </button>
+                  ) : null}
+                  {desktopUpdate?.error && (
+                    <small className="group-profile-error">
+                      {desktopUpdate.error}
+                    </small>
+                  )}
+                </section>
+                )}
+                <section className="desktop-settings-card">
+                  <div className="security-note">
+                    <MonitorCog size={20} />
+                    <div>
+                      <strong>Окно ChatWave</strong>
+                      <span>Поведение приложения и размер интерфейса.</span>
+                    </div>
+                  </div>
+                  <label className="desktop-toggle-row">
+                    <span>
+                      <strong>Сворачивать в системный трей</strong>
+                      <small>
+                        Кнопка закрытия скроет окно, звонки и уведомления
+                        продолжат работать.
+                      </small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={desktopSettings?.closeToTray ?? false}
+                      onChange={(event) =>
+                        void updateDesktopSettings({
+                          closeToTray: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="desktop-scale-setting">
+                    <span>
+                      <strong>Масштаб интерфейса</strong>
+                      <small>
+                        {Math.round(
+                          (desktopSettings?.zoomFactor ?? 1) * 100,
+                        )}
+                        %
+                      </small>
+                    </span>
+                    <input
+                      type="range"
+                      min="0.8"
+                      max="2"
+                      step="0.1"
+                      value={desktopSettings?.zoomFactor ?? 1}
+                      onChange={(event) =>
+                        void updateDesktopSettings({
+                          zoomFactor: Number(event.currentTarget.value),
+                        })
+                      }
+                    />
+                  </label>
+                </section>
+
+                <section className="desktop-settings-card">
+                  <div className="security-note">
+                    <Mic size={20} />
+                    <div>
+                      <strong>Голос и видео</strong>
+                      <span>
+                        Выбранные устройства применяются при следующем звонке.
+                      </span>
+                    </div>
+                  </div>
+                  <label>
+                    <span className="device-label">
+                      <Mic size={15} /> Микрофон
+                    </span>
+                    <select
+                      value={mediaPreferences.audioInputId}
+                      onChange={(event) =>
+                        updateMediaPreferences({
+                          audioInputId: event.currentTarget.value,
+                        })
+                      }
+                    >
+                      <option value="">Системное устройство</option>
+                      {mediaDevices
+                        .filter((device) => device.kind === "audioinput")
+                        .map((device, index) => (
+                          <option key={device.deviceId} value={device.deviceId}>
+                            {device.label || `Микрофон ${index + 1}`}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="device-label">
+                      <Video size={15} /> Веб-камера
+                    </span>
+                    <select
+                      value={mediaPreferences.videoInputId}
+                      onChange={(event) =>
+                        updateMediaPreferences({
+                          videoInputId: event.currentTarget.value,
+                        })
+                      }
+                    >
+                      <option value="">Системное устройство</option>
+                      {mediaDevices
+                        .filter((device) => device.kind === "videoinput")
+                        .map((device, index) => (
+                          <option key={device.deviceId} value={device.deviceId}>
+                            {device.label || `Камера ${index + 1}`}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="device-label">
+                      <Headphones size={15} /> Наушники / динамики
+                    </span>
+                    <select
+                      value={mediaPreferences.audioOutputId}
+                      onChange={(event) =>
+                        updateMediaPreferences({
+                          audioOutputId: event.currentTarget.value,
+                        })
+                      }
+                    >
+                      <option value="">Системное устройство</option>
+                      {mediaDevices
+                        .filter((device) => device.kind === "audiooutput")
+                        .map((device, index) => (
+                          <option key={device.deviceId} value={device.deviceId}>
+                            {device.label || `Выход ${index + 1}`}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <button type="button" onClick={() => void refreshDevices()}>
+                    Обновить список устройств
+                  </button>
+                </section>
               </div>
             )}
 

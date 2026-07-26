@@ -27,10 +27,10 @@ async def test_get_users(client: TestClient, create_random_users, authorized_tes
 @pytest.mark.parametrize(
     "search_query, search_limit, expected_status_code, expected_quantity",
     [
-        ("a", None, 422, 0),
-        ("Ryan", None, 200, 2),
-        ("Mike", None, 200, 1),
-        ("Ryan", 1, 200, 1),
+        ("r", None, 200, 2),
+        ("ryan", None, 200, 2),
+        ("mike", None, 200, 1),
+        ("ry", 1, 200, 1),
     ],
 )
 async def test_search_users(
@@ -56,6 +56,7 @@ async def test_search_users(
     if response.status_code == 200:
         assert isinstance(response.json(), list)
         assert len(response.json()) == expected_quantity
+        assert all("username" in user for user in response.json())
 
 
 async def test_get_users_last_online(client: TestClient, authorized_test_client):

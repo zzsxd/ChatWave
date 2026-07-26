@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Check, Search, UserPlus, X } from "lucide-react";
 import { ApiPublicUser, chatWaveApi } from "../api";
 
@@ -24,27 +31,65 @@ export function AddGroupMembersModal({
   const [adding, setAdding] = useState(false);
   const [searched, setSearched] = useState(false);
   const [error, setError] = useState("");
-  const existing = new Set([...existingMemberIds, currentUserId]);
+  const searchSequenceRef = useRef(0);
+  const activeSearchRef = useRef<AbortController | null>(null);
+  const existing = useMemo(
+    () => new Set([...existingMemberIds, currentUserId]),
+    [currentUserId, existingMemberIds],
+  );
 
-  const search = async (event: FormEvent) => {
-    event.preventDefault();
-    const value = query.trim();
-    if (value.length < 3) return;
+  const performSearch = useCallback(async (rawValue: string) => {
+    const value = rawValue.trim().replace(/^@/, "");
+    const sequence = ++searchSequenceRef.current;
+    activeSearchRef.current?.abort();
+    if (!value) {
+      setResults([]);
+      setSearched(false);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
+    const controller = new AbortController();
+    activeSearchRef.current = controller;
     try {
-      const users = await chatWaveApi.searchUsers(value);
+      const users = await chatWaveApi.searchUsers(value, 30, controller.signal);
+      if (sequence !== searchSequenceRef.current) return;
       setResults(users.filter((user) => !existing.has(user.id)));
       setSearched(true);
     } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (sequence !== searchSequenceRef.current) return;
       setError(
         reason instanceof Error
           ? reason.message
           : "Не удалось найти пользователей",
       );
     } finally {
-      setLoading(false);
+      if (activeSearchRef.current === controller) {
+        activeSearchRef.current = null;
+      }
+      if (sequence === searchSequenceRef.current) setLoading(false);
     }
+  }, [existing]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void performSearch(query);
+    }, 220);
+    return () => window.clearTimeout(timeout);
+  }, [performSearch, query]);
+
+  useEffect(
+    () => () => {
+      activeSearchRef.current?.abort();
+    },
+    [],
+  );
+
+  const search = (event: FormEvent) => {
+    event.preventDefault();
+    void performSearch(query);
   };
 
   const addMembers = async () => {
@@ -79,7 +124,7 @@ export function AddGroupMembersModal({
         </button>
         <span className="eyebrow">Участники группы</span>
         <h2 id="add-members-title">Добавить участников</h2>
-        <p>Найдите пользователей и выберите одного или нескольких.</p>
+        <p>Найдите пользователей по username и выберите участников.</p>
 
         <form className="people-search-form" onSubmit={search}>
           <Search size={17} />
@@ -87,12 +132,11 @@ export function AddGroupMembersModal({
             autoFocus
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Введите минимум 3 символа"
-            minLength={3}
-            maxLength={128}
+            placeholder="@username"
+            maxLength={64}
             required
           />
-          <button disabled={loading || query.trim().length < 3}>
+          <button disabled={loading || !query.trim().replace(/^@/, "")}>
             {loading ? "Ищем…" : "Найти"}
           </button>
         </form>
@@ -120,7 +164,10 @@ export function AddGroupMembersModal({
                 </span>
                 <span>
                   <strong>{user.nickname}</strong>
-                  <small>{user.bio || "Пользователь ChatWave"}</small>
+                  <small>
+                    @{user.username}
+                    {user.bio ? ` · ${user.bio}` : ""}
+                  </small>
                 </span>
                 <b className="person-check">{selected && <Check size={15} />}</b>
               </button>

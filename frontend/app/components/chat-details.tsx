@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   FileText,
   Images,
   MoreHorizontal,
+  Pencil,
   Pin,
+  Save,
   Trash2,
   UserPlus,
   Users,
@@ -28,6 +30,7 @@ type ChatDetailsProps = {
   revision: number;
   onClose: () => void;
   onAddMember?: () => void;
+  onGroupUpdated?: () => void;
   onOpenMessage: (message: Message) => void;
   onDownload: (message: Message) => void;
 };
@@ -41,6 +44,7 @@ export function ChatDetails({
   revision,
   onClose,
   onAddMember,
+  onGroupUpdated,
   onOpenMessage,
   onDownload,
 }: ChatDetailsProps) {
@@ -48,11 +52,31 @@ export function ChatDetails({
   const [items, setItems] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [avatarHistoryOpen, setAvatarHistoryOpen] = useState(false);
+  const [editingGroup, setEditingGroup] = useState(false);
+  const [groupName, setGroupName] = useState(chat.title);
+  const [groupDescription, setGroupDescription] = useState(chat.description);
+  const [groupSaving, setGroupSaving] = useState(false);
+  const [groupError, setGroupError] = useState("");
+  const groupAvatarInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    setTab("overview");
-    setItems([]);
+    const resetTimer = window.setTimeout(() => {
+      setTab("overview");
+      setItems([]);
+      setEditingGroup(false);
+      setGroupError("");
+    }, 0);
+    return () => window.clearTimeout(resetTimer);
   }, [chat.conversationId]);
+
+  useEffect(() => {
+    if (editingGroup) return;
+    const syncTimer = window.setTimeout(() => {
+      setGroupName(chat.title);
+      setGroupDescription(chat.description);
+    }, 0);
+    return () => window.clearTimeout(syncTimer);
+  }, [chat.description, chat.title, editingGroup]);
 
   useEffect(() => {
     if (
@@ -63,7 +87,10 @@ export function ChatDetails({
       return;
     }
     let active = true;
-    setLoading(true);
+    const loadingTimer = window.setTimeout(
+      () => active && setLoading(true),
+      0,
+    );
     const request =
       tab === "pinned"
         ? chatWaveApi.pinnedMessages(chat.conversationId)
@@ -84,6 +111,7 @@ export function ChatDetails({
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
+      window.clearTimeout(loadingTimer);
     };
   }, [chat, currentUser, open, revision, tab, users]);
 
@@ -95,6 +123,48 @@ export function ChatDetails({
   const unpin = async (messageId: number) => {
     await chatWaveApi.unpinMessage(messageId);
     setItems((current) => current.filter((message) => message.id !== messageId));
+  };
+
+  const saveGroup = async () => {
+    if (!chat.conversationId || !groupName.trim()) return;
+    setGroupSaving(true);
+    setGroupError("");
+    try {
+      await chatWaveApi.updateGroup(chat.conversationId, {
+        name: groupName.trim(),
+        description: groupDescription.trim() || null,
+      });
+      setEditingGroup(false);
+      onGroupUpdated?.();
+    } catch (reason) {
+      setGroupError(
+        reason instanceof Error
+          ? reason.message
+          : "Не удалось сохранить группу",
+      );
+    } finally {
+      setGroupSaving(false);
+    }
+  };
+
+  const uploadGroupAvatar = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !chat.conversationId) return;
+    setGroupSaving(true);
+    setGroupError("");
+    try {
+      await chatWaveApi.uploadGroupAvatar(chat.conversationId, file);
+      onGroupUpdated?.();
+    } catch (reason) {
+      setGroupError(
+        reason instanceof Error
+          ? reason.message
+          : "Не удалось обновить аватар группы",
+      );
+    } finally {
+      setGroupSaving(false);
+    }
   };
 
   const title = {
@@ -121,11 +191,27 @@ export function ChatDetails({
       {tab === "overview" ? (
         <>
           <div className="details-hero compact">
+            {chat.type === "group" &&
+              ["creator", "admin"].includes(chat.currentUserRole ?? "") && (
+                <button
+                  className="group-edit-button"
+                  onClick={() => setEditingGroup((current) => !current)}
+                  aria-label="Редактировать группу"
+                  title="Редактировать группу"
+                >
+                  <Pencil size={15} />
+                </button>
+              )}
             <button
               className={`avatar avatar-${chat.accent}`}
               onClick={() => {
                 if (chat.type === "direct" && chat.recipientId) {
                   setAvatarHistoryOpen(true);
+                } else if (
+                  chat.type === "group" &&
+                  ["creator", "admin"].includes(chat.currentUserRole ?? "")
+                ) {
+                  groupAvatarInput.current?.click();
                 }
               }}
               aria-label={
@@ -141,11 +227,58 @@ export function ChatDetails({
               )}
               {chat.online && <i />}
             </button>
-            <strong>{chat.title}</strong>
+            {editingGroup ? (
+              <div className="group-profile-editor">
+                <input
+                  value={groupName}
+                  onChange={(event) => setGroupName(event.target.value)}
+                  maxLength={64}
+                  aria-label="Название группы"
+                />
+                <textarea
+                  value={groupDescription}
+                  onChange={(event) =>
+                    setGroupDescription(event.target.value)
+                  }
+                  maxLength={256}
+                  rows={3}
+                  placeholder="Описание группы"
+                  aria-label="Описание группы"
+                />
+                <button
+                  className="primary-button"
+                  onClick={() => void saveGroup()}
+                  disabled={groupSaving || !groupName.trim()}
+                >
+                  <Save size={15} />
+                  {groupSaving ? "Сохраняем…" : "Сохранить"}
+                </button>
+              </div>
+            ) : (
+              <strong>{chat.title}</strong>
+            )}
+            {chat.type === "direct" && chat.recipientUsername && (
+              <span className="details-username">
+                @{chat.recipientUsername}
+              </span>
+            )}
             {chat.description &&
+              !editingGroup &&
               !["Личный диалог", "Групповое пространство"].includes(
                 chat.description,
               ) && <p>{chat.description}</p>}
+            <input
+              ref={groupAvatarInput}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              hidden
+              onChange={(event) => void uploadGroupAvatar(event)}
+            />
+            {groupError && (
+              <small className="group-profile-error" role="alert">
+                {groupError}
+              </small>
+            )}
           </div>
 
           <div className="details-section details-navigation">
@@ -166,42 +299,48 @@ export function ChatDetails({
             </button>
           </div>
 
-          <div className="members-title">
-            <span>
-              <Users size={14} />
-              {chat.type === "group"
-                ? `Участники · ${chat.memberCount}`
-                : "Участники"}
-            </span>
-            {chat.type === "group" && onAddMember && (
-              <button aria-label="Добавить участника" onClick={onAddMember}>
-                <UserPlus size={16} />
-              </button>
-            )}
-          </div>
-          <div className="member-list">
-            {members.map((member) => (
-              <button key={member.name}>
-                <span className={`avatar avatar-${member.accent}`}>
-                  {member.avatarUrl ? (
-                    <img src={member.avatarUrl} alt="" />
-                  ) : (
-                    member.initials
-                  )}
-                  {member.online && <i />}
-                </span>
+          {chat.type === "group" && (
+            <>
+              <div className="members-title">
                 <span>
-                  <strong>{member.name}</strong>
-                  <small>
-                    {[member.role, member.presenceText]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </small>
+                  <Users size={14} />
+                  Участники · {chat.memberCount}
                 </span>
-                <MoreHorizontal size={16} />
-              </button>
-            ))}
-          </div>
+                {onAddMember && (
+                  <button aria-label="Добавить участника" onClick={onAddMember}>
+                    <UserPlus size={16} />
+                  </button>
+                )}
+              </div>
+              <div className="member-list">
+                {members.map((member) => (
+                  <button key={member.name}>
+                    <span className={`avatar avatar-${member.accent}`}>
+                      {member.avatarUrl ? (
+                        <img src={member.avatarUrl} alt="" />
+                      ) : (
+                        member.initials
+                      )}
+                      {member.online && <i />}
+                    </span>
+                    <span>
+                      <strong>{member.name}</strong>
+                      <small>
+                        {[
+                          member.username ? `@${member.username}` : "",
+                          member.role,
+                          member.presenceText,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </small>
+                    </span>
+                    <MoreHorizontal size={16} />
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </>
       ) : (
         <div className={`details-collection details-${tab}`}>

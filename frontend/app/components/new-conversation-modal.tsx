@@ -1,6 +1,12 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Search, UserRoundPlus, UsersRound, X } from "lucide-react";
 import { ApiPublicUser, chatWaveApi } from "../api";
 
@@ -24,24 +30,60 @@ export function NewConversationModal({
   const [creatingId, setCreatingId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [searched, setSearched] = useState(false);
+  const searchSequenceRef = useRef(0);
+  const activeSearchRef = useRef<AbortController | null>(null);
+  const creatingGroupRef = useRef(false);
 
-  const search = async (event: FormEvent) => {
-    event.preventDefault();
-    const value = query.trim();
-    if (value.length < 3) return;
+  const performSearch = useCallback(async (rawValue: string) => {
+    const value = rawValue.trim().replace(/^@/, "");
+    const sequence = ++searchSequenceRef.current;
+    activeSearchRef.current?.abort();
+    if (!value) {
+      setResults([]);
+      setSearched(false);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError("");
+    const controller = new AbortController();
+    activeSearchRef.current = controller;
     try {
-      const users = await chatWaveApi.searchUsers(value);
+      const users = await chatWaveApi.searchUsers(value, 30, controller.signal);
+      if (sequence !== searchSequenceRef.current) return;
       setResults(users.filter((user) => user.id !== currentUserId));
       setSearched(true);
     } catch (reason) {
+      if (reason instanceof DOMException && reason.name === "AbortError") return;
+      if (sequence !== searchSequenceRef.current) return;
       setError(
         reason instanceof Error ? reason.message : "Не удалось найти пользователей",
       );
     } finally {
-      setLoading(false);
+      if (activeSearchRef.current === controller) {
+        activeSearchRef.current = null;
+      }
+      if (sequence === searchSequenceRef.current) setLoading(false);
     }
+  }, [currentUserId]);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      void performSearch(query);
+    }, 220);
+    return () => window.clearTimeout(timeout);
+  }, [performSearch, query]);
+
+  useEffect(
+    () => () => {
+      activeSearchRef.current?.abort();
+    },
+    [],
+  );
+
+  const search = (event: FormEvent) => {
+    event.preventDefault();
+    void performSearch(query);
   };
 
   const startDirect = async (user: ApiPublicUser) => {
@@ -61,6 +103,8 @@ export function NewConversationModal({
 
   const createGroup = async (event: FormEvent) => {
     event.preventDefault();
+    if (creatingGroupRef.current) return;
+    creatingGroupRef.current = true;
     setLoading(true);
     setError("");
     try {
@@ -74,6 +118,7 @@ export function NewConversationModal({
         reason instanceof Error ? reason.message : "Не удалось создать группу",
       );
     } finally {
+      creatingGroupRef.current = false;
       setLoading(false);
     }
   };
@@ -96,7 +141,7 @@ export function NewConversationModal({
         </h2>
         <p>
           {mode === "direct"
-            ? "Поиск выполняется по отображаемому имени."
+            ? "Начните вводить username — варианты появятся автоматически."
             : "Участников можно добавить после создания пространства."}
         </p>
 
@@ -131,12 +176,11 @@ export function NewConversationModal({
                 autoFocus
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Введите минимум 3 символа"
-                minLength={3}
-                maxLength={128}
+                placeholder="@username"
+                maxLength={64}
                 required
               />
-              <button disabled={loading || query.trim().length < 3}>
+              <button disabled={loading || !query.trim().replace(/^@/, "")}>
                 {loading ? "Ищем…" : "Найти"}
               </button>
             </form>
@@ -153,7 +197,10 @@ export function NewConversationModal({
                   </span>
                   <span>
                     <strong>{user.nickname}</strong>
-                    <small>{user.bio || "Пользователь ChatWave"}</small>
+                    <small>
+                      @{user.username}
+                      {user.bio ? ` · ${user.bio}` : ""}
+                    </small>
                   </span>
                   <b>{creatingId === user.id ? "Создаём…" : "Написать"}</b>
                 </button>
@@ -162,7 +209,7 @@ export function NewConversationModal({
                 <div className="people-empty">
                   <Search size={23} />
                   <strong>Никого не нашли</strong>
-                  <span>Проверьте имя или попробуйте другой запрос.</span>
+                  <span>Проверьте username или попробуйте другой запрос.</span>
                 </div>
               )}
             </div>

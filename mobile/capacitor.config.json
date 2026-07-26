@@ -1,0 +1,25 @@
+{
+  "appId": "io.chatwave.ios",
+  "appName": "ChatWave",
+  "webDir": "www",
+  "backgroundColor": "#080d17",
+  "loggingBehavior": "none",
+  "appendUserAgent": " ChatWave-iOS/1.0",
+  "android": {
+    "backgroundColor": "#080d17",
+    "appendUserAgent": " ChatWave-Android/1.0",
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false,
+    "loggingBehavior": "none"
+  },
+  "ios": {
+    "backgroundColor": "#080d17",
+    "contentInset": "never",
+    "scrollEnabled": true,
+    "allowsLinkPreview": false,
+    "preferredContentMode": "mobile",
+    "webContentsDebuggingEnabled": false,
+    "initialFocus": true
+  }
+}

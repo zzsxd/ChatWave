@@ -164,18 +164,21 @@ async def select_users(users_ids: list[int]) -> list[Users]:
         return raw_data
 
 
-async def select_users_by_nickname(search_query: str, limit: int | None) -> list[Users]:
+async def select_users_by_username(search_query: str, limit: int | None) -> list[Users]:
 
     async def query_builder():
+        normalized_query = search_query.strip().lower().removeprefix("@")
         if limit is None:
             _query = (
                 select(Users)
-                .filter(Users.nickname.icontains(search_query, autoescape=True))
+                .filter(Users.username.istartswith(normalized_query, autoescape=True))
+                .order_by(Users.username)
             )
         else:
             _query = (
                 select(Users)
-                .filter(Users.nickname.icontains(search_query, autoescape=True))
+                .filter(Users.username.istartswith(normalized_query, autoescape=True))
+                .order_by(Users.username)
                 .limit(limit)
             )
 

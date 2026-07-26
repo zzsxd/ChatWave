@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from dependencies import fetch_online_user_ids, redis_client
 from repository import (
     update_user,
-    select_users_by_nickname,
+    select_users_by_username,
     select_users_last_online,
     delete_user_avatar,
     select_user,
@@ -91,8 +91,11 @@ async def fetch_private_users(users_ids: list[int]) -> list[PrivateUser]:
     return users_objs
 
 
-async def search_users_by_nickname(search_query: str, limit: int | None) -> list[PublicUser]:
-    raw_users = await select_users_by_nickname(search_query=search_query, limit=limit)
+async def search_users_by_username(search_query: str, limit: int | None) -> list[PublicUser]:
+    raw_users = await select_users_by_username(
+        search_query=search_query,
+        limit=limit,
+    )
     users_objs = await many_sqlalchemy_to_pydantic(
         sqlalchemy_models=raw_users,
         pydantic_model=PublicUser

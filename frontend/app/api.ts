@@ -4,6 +4,8 @@ export type ApiConversation = {
   name: string | null;
   description: string | null;
   avatar_name: string | null;
+  created_at: string;
+  updated_at: string | null;
   members: Array<{ user_id: number; user_role: string }>;
 };
 
@@ -25,6 +27,12 @@ export type ApiMessage = {
   reactions: Array<{ user_id: number; emoji: string }>;
   created_at: string | null;
   updated_at: string | null;
+};
+
+export type ApiVoiceTranscription = {
+  text: string;
+  language: string | null;
+  cached: boolean;
 };
 
 export type E2EESyncResponse = {
@@ -52,6 +60,13 @@ export type ApiUnreadMessage = {
 export type ApiIceServerConfig = {
   ice_servers: RTCIceServer[];
   expires_at: number;
+};
+
+export type ApiActiveGroupCall = {
+  call_id: number;
+  conversation_id: number;
+  media: "audio" | "video";
+  participant_count: number;
 };
 
 export type MessageEvent =
@@ -96,6 +111,7 @@ export type ApiUser = {
 
 export type ApiPublicUser = {
   id: number;
+  username: string;
   nickname: string;
   bio: string | null;
   avatar_name: string | null;
@@ -118,8 +134,35 @@ export type ApiUserOnline = {
 const DEFAULT_API_URL =
   process.env.NEXT_PUBLIC_CHATWAVE_API_URL?.replace(/\/$/, "") ??
   "http://localhost:8000";
+const API_REQUEST_TIMEOUT_MS = 15_000;
+const SESSION_RESTORE_TIMEOUT_MS = 8_000;
 
 class SessionExpiredError extends Error {}
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+  timeoutMs = API_REQUEST_TIMEOUT_MS,
+) {
+  const controller = new AbortController();
+  const parentSignal = init.signal;
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  }
+  const timeout = window.setTimeout(
+    () => controller.abort(new DOMException("Request timed out", "TimeoutError")),
+    timeoutMs,
+  );
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+  }
+}
 
 class ChatWaveApi {
   private token: string | null = null;
@@ -147,6 +190,15 @@ class ChatWaveApi {
   avatarUrl(avatarName: string | null | undefined) {
     return avatarName
       ? `${this.apiUrl}/users/avatar/${encodeURIComponent(avatarName)}`
+      : null;
+  }
+
+  groupAvatarUrl(
+    groupId: number,
+    avatarName: string | null | undefined,
+  ) {
+    return avatarName
+      ? `${this.apiUrl}/conversations/${groupId}/avatar/${encodeURIComponent(avatarName)}`
       : null;
   }
 
@@ -201,13 +253,17 @@ class ChatWaveApi {
   private async refreshAccessToken(): Promise<string> {
     if (this.refreshPromise) return this.refreshPromise;
     const refreshRequest = (async () => {
-      const response = await fetch(`${this.apiUrl}/auth/refresh`, {
-        method: "POST",
-        credentials: "include",
-        headers: this.token
-          ? { Authorization: `Bearer ${this.token}` }
-          : undefined,
-      });
+      const response = await fetchWithTimeout(
+        `${this.apiUrl}/auth/refresh`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: this.token
+            ? { Authorization: `Bearer ${this.token}` }
+            : undefined,
+        },
+        SESSION_RESTORE_TIMEOUT_MS,
+      );
       if (response.status === 401) throw new SessionExpiredError("Сессия истекла");
       if (!response.ok) throw new Error(`Не удалось обновить сессию: ${response.status}`);
       const payload = (await response.json()) as { access_token: string };
@@ -260,7 +316,7 @@ class ChatWaveApi {
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     let response: Response;
     const execute = () =>
-      fetch(`${this.apiUrl}${path}`, {
+      fetchWithTimeout(`${this.apiUrl}${path}`, {
         ...init,
         credentials: init.credentials ?? "include",
         headers: {
@@ -278,6 +334,9 @@ class ChatWaveApi {
         response = await execute();
       }
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw error;
+      }
       if (error instanceof SessionExpiredError) {
         this.clearSession();
         throw error;
@@ -315,7 +374,7 @@ class ChatWaveApi {
     const body = new URLSearchParams({ username, password });
     let response: Response;
     try {
-      response = await fetch(`${this.apiUrl}/auth/login`, {
+      response = await fetchWithTimeout(`${this.apiUrl}/auth/login`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -430,12 +489,15 @@ class ChatWaveApi {
     return this.request<ApiUser[]>(`/users?${params.toString()}`);
   }
 
-  searchUsers(searchQuery: string, limit = 30) {
+  searchUsers(searchQuery: string, limit = 30, signal?: AbortSignal) {
+    const normalizedQuery = searchQuery.trim().replace(/^@/, "");
     const params = new URLSearchParams({
-      search_query: searchQuery,
+      search_query: normalizedQuery,
       limit: String(limit),
     });
-    return this.request<ApiPublicUser[]>(`/users/search?${params.toString()}`);
+    return this.request<ApiPublicUser[]>(`/users/search?${params.toString()}`, {
+      signal,
+    });
   }
 
   createPrivateConversation(recipientId: number) {
@@ -452,6 +514,31 @@ class ChatWaveApi {
         name,
         description: description?.trim() || null,
       }),
+    });
+  }
+
+  savedConversation() {
+    return this.request<ApiConversation>("/conversations/saved", {
+      method: "POST",
+    });
+  }
+
+  updateGroup(groupId: number, profile: {
+    name?: string;
+    description?: string | null;
+  }) {
+    return this.request<void>(`/conversations/${groupId}`, {
+      method: "PATCH",
+      body: JSON.stringify(profile),
+    });
+  }
+
+  uploadGroupAvatar(groupId: number, file: File) {
+    const body = new FormData();
+    body.append("avatar", file);
+    return this.request<void>(`/conversations/${groupId}/avatar`, {
+      method: "PUT",
+      body,
     });
   }
 
@@ -510,6 +597,10 @@ class ChatWaveApi {
 
   iceServers() {
     return this.request<ApiIceServerConfig>("/calls/ice-servers");
+  }
+
+  activeGroupCalls() {
+    return this.request<ApiActiveGroupCall[]>("/calls/active-groups");
   }
 
   disconnectCall(callId: number) {
@@ -690,9 +781,16 @@ class ChatWaveApi {
     });
   }
 
+  transcribeVoice(messageId: number) {
+    return this.request<ApiVoiceTranscription>(
+      `/messages/${messageId}/transcription`,
+      { method: "POST" },
+    );
+  }
+
   async downloadMedia(messageId: number) {
     const execute = () =>
-      fetch(`${this.apiUrl}/messages/${messageId}/media`, {
+      fetchWithTimeout(`${this.apiUrl}/messages/${messageId}/media`, {
         credentials: "include",
         headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
       });

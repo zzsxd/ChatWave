@@ -1,12 +1,12 @@
 "use client";
 
 import {
+  ArrowLeft,
   AtSign,
+  Bookmark,
   Info,
   ListChecks,
-  LogOut,
   Maximize2,
-  Menu,
   MessageCircleMore,
   Mic,
   MicOff,
@@ -15,12 +15,10 @@ import {
   MoonStar,
   Phone,
   PhoneOff,
-  Pin,
   Plus,
   Search,
   ScreenShare,
   ScreenShareOff,
-  Settings,
   ShieldCheck,
   Sun,
   Trash2,
@@ -28,12 +26,16 @@ import {
   Video,
   VideoOff,
   Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import Image from "next/image";
 import {
-  type RefObject,
+  CSSProperties,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   FormEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -42,7 +44,14 @@ import {
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ApiMessage, ApiUser, chatWaveApi } from "./api";
-import { CallMedia, CallPhase, useCall } from "./calls";
+import {
+  CallMedia,
+  CallPhase,
+  DesktopScreenSource,
+  SCREEN_SHARE_PRESETS,
+  ScreenShareQuality,
+  useCall,
+} from "./calls";
 import { useUiState } from "./hooks/use-ui-state";
 import { ChatSidebar } from "./components/chat-sidebar";
 import { ChatDetails } from "./components/chat-details";
@@ -55,12 +64,17 @@ import { MessageSearch } from "./components/message-search";
 import { AuthScreen } from "./components/auth-screen";
 import { NewConversationModal } from "./components/new-conversation-modal";
 import { AddGroupMembersModal } from "./components/add-group-members-modal";
+import { UserProfileModal } from "./components/user-profile-modal";
 import { ProfileSettingsModal } from "./components/profile-settings-modal";
-import { loadAccountWorkspace } from "./account-workspace";
+import {
+  applyWorkspaceMetadata,
+  loadAccountWorkspace,
+} from "./account-workspace";
 import { useMessageMutations } from "./hooks/use-message-mutations";
 import {
   optimisticMediaMessage,
   optimisticTextMessage,
+  reconcileOptimisticMessage,
 } from "./optimistic-messages";
 import {
   Chat,
@@ -74,12 +88,17 @@ import {
 } from "./models";
 import { initializeNotificationSounds } from "./notification-sounds";
 import {
+  decryptApiMessage,
   decryptApiMessages,
   encryptTextMessage,
   initializeCrypto,
   stopCryptoPolling,
 } from "./e2ee/client";
 import { closeCryptoMachine } from "./e2ee/crypto-runtime";
+import {
+  CHAT_BACKGROUND_EVENT,
+  loadChatBackground,
+} from "./chat-background";
 
 const PAGE_SIZE = 50;
 const EMPTY_CHAT: Chat = {
@@ -113,6 +132,14 @@ const iconButton = (
   </button>
 );
 
+const isSameOptimisticMessage = (left: Message, right: Message) =>
+  left.id === right.id ||
+  Boolean(
+    left.clientMessageId &&
+      right.clientMessageId &&
+      left.clientMessageId === right.clientMessageId,
+  );
+
 export default function Home() {
   const queryClient = useQueryClient();
   const hydrated = useSyncExternalStore(
@@ -133,21 +160,34 @@ export default function Home() {
     detailsOpen,
     mobileChatsOpen: mobileChats,
     theme,
-    profileOpen,
     setQuery,
     setFilter,
     setNavigation,
     setDetailsOpen,
     setMobileChatsOpen: setMobileChats,
     setTheme,
-    setProfileOpen,
   } = useUiState();
   const [connectedUser, setConnectedUser] = useState<ApiUser | null>(null);
+  const [chatBackground, setChatBackground] = useState<{
+    url: string;
+    mediaType: string;
+  } | null>(null);
   const [authState, setAuthState] = useState<
     "checking" | "anonymous" | "authenticated"
   >("checking");
+  const [realtimeReady, setRealtimeReady] = useState(false);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
   const [profileSettingsOpen, setProfileSettingsOpen] = useState(false);
+  const [viewingProfileId, setViewingProfileId] = useState<number | null>(null);
+  const [pinnedConversationIds, setPinnedConversationIds] = useState<number[]>(
+    [],
+  );
+  const [sidebarWidth, setSidebarWidth] = useState(364);
+  const sidebarResizeRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startWidth: number;
+  } | null>(null);
   const [detailsRevision, setDetailsRevision] = useState(0);
   const [addMembersOpen, setAddMembersOpen] = useState(false);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
@@ -178,22 +218,187 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const optimisticIdRef = useRef(-1);
   const sessionRestoreStartedRef = useRef(false);
+  const mobileNavigationInitializedRef = useRef(false);
   const connectAccountRef = useRef<
     ((user: ApiUser) => Promise<void>) | null
   >(null);
-  const call = useCall(Boolean(connectedUser));
-  const presenceByUser = usePresence(connectedUser);
+
+  useEffect(() => {
+    if (!connectedUser) {
+      const resetTimer = window.setTimeout(() => setChatBackground(null), 0);
+      return () => window.clearTimeout(resetTimer);
+    }
+    let disposed = false;
+    let activeUrl: string | null = null;
+    const refresh = async () => {
+      try {
+        const background = await loadChatBackground(connectedUser.id);
+        if (disposed) return;
+        if (activeUrl) URL.revokeObjectURL(activeUrl);
+        activeUrl = background ? URL.createObjectURL(background.blob) : null;
+        setChatBackground(
+          activeUrl && background
+            ? { url: activeUrl, mediaType: background.mediaType }
+            : null,
+        );
+      } catch {
+        if (!disposed) setChatBackground(null);
+      }
+    };
+    const onChange = (event: Event) => {
+      const userId = (event as CustomEvent<{ userId?: number }>).detail?.userId;
+      if (userId === connectedUser.id) void refresh();
+    };
+    void refresh();
+    window.addEventListener(CHAT_BACKGROUND_EVENT, onChange);
+    return () => {
+      disposed = true;
+      window.removeEventListener(CHAT_BACKGROUND_EVENT, onChange);
+      if (activeUrl) URL.revokeObjectURL(activeUrl);
+    };
+  }, [connectedUser]);
+
+  useEffect(() => {
+    if (!connectedUser) return;
+    const media = window.matchMedia("(max-width: 720px)");
+    const handleBreakpoint = (event: MediaQueryListEvent) => {
+      if (event.matches) setMobileChats(true);
+    };
+    media.addEventListener("change", handleBreakpoint);
+    let timer: number | undefined;
+    if (!mobileNavigationInitializedRef.current) {
+      mobileNavigationInitializedRef.current = true;
+      if (media.matches) {
+        timer = window.setTimeout(() => setMobileChats(true), 0);
+      }
+    }
+    return () => {
+      if (timer) window.clearTimeout(timer);
+      media.removeEventListener("change", handleBreakpoint);
+    };
+  }, [connectedUser, setMobileChats]);
+
+  useEffect(() => {
+    const returnToChatList = () => {
+      if (!window.matchMedia("(max-width: 720px)").matches) return;
+      setDetailsOpen(false);
+      setMessageSearchOpen(false);
+      setMobileChats(true);
+    };
+    window.addEventListener("popstate", returnToChatList);
+    return () => window.removeEventListener("popstate", returnToChatList);
+  }, [setDetailsOpen, setMobileChats]);
+  const syncMissingConversation = useCallback(
+    async (conversationId: number) => {
+      if (!connectedUser) return null;
+      try {
+        await queryClient.invalidateQueries({
+          queryKey: ["conversations", connectedUser.id],
+        });
+        const workspace = await loadAccountWorkspace(
+          connectedUser,
+          queryClient,
+        );
+        const chat =
+          workspace.chats.find(
+            (item) => item.conversationId === conversationId,
+          ) ?? null;
+        if (!chat) return null;
+        setApiUsers(workspace.users);
+        apiUsersRef.current = workspace.users;
+        setChatItems(workspace.chats);
+        return { chat, users: workspace.users };
+      } catch {
+        return null;
+      }
+    },
+    [connectedUser, queryClient],
+  );
+  const call = useCall(Boolean(connectedUser) && realtimeReady);
+  const presenceByUser = usePresence(realtimeReady ? connectedUser : null);
   const sendMessageSignal = useMessageSocket({
-    connectedUser,
+    connectedUser: realtimeReady ? connectedUser : null,
     selectedChatId: selectedChat,
     chats: chatItems,
     users: apiUsers,
     setChats: setChatItems,
     setMessages: setMessagesByChat,
     setTyping: setTypingByConversation,
+    onMissingConversation: syncMissingConversation,
   });
 
   useEffect(() => initializeNotificationSounds(), []);
+
+  useEffect(() => {
+    if (!connectedUser) {
+      const resetTimer = window.setTimeout(
+        () => setPinnedConversationIds([]),
+        0,
+      );
+      return () => window.clearTimeout(resetTimer);
+    }
+    const restoreTimer = window.setTimeout(() => {
+      try {
+        const stored = JSON.parse(
+          localStorage.getItem(`chatwave_pinned_${connectedUser.id}`) ?? "[]",
+        );
+        setPinnedConversationIds(
+          Array.isArray(stored)
+            ? stored.filter((value): value is number => Number.isInteger(value))
+            : [],
+        );
+        const storedWidth = Number(
+          localStorage.getItem("chatwave_sidebar_width"),
+        );
+        if (Number.isFinite(storedWidth)) {
+          setSidebarWidth(Math.min(460, Math.max(76, storedWidth)));
+        }
+      } catch {
+        setPinnedConversationIds([]);
+      }
+    }, 0);
+    return () => window.clearTimeout(restoreTimer);
+  }, [connectedUser]);
+
+  const togglePinnedChat = (chat: Chat) => {
+    if (!chat.conversationId || !connectedUser) return;
+    setPinnedConversationIds((current) => {
+      const next = current.includes(chat.conversationId!)
+        ? current.filter((id) => id !== chat.conversationId)
+        : [...current, chat.conversationId!];
+      localStorage.setItem(
+        `chatwave_pinned_${connectedUser.id}`,
+        JSON.stringify(next),
+      );
+      return next;
+    });
+  };
+
+  const resizeSidebarStart = (event: ReactPointerEvent<HTMLDivElement>) => {
+    sidebarResizeRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const resizeSidebarMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const resize = sidebarResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    const nextWidth = Math.min(
+      460,
+      Math.max(76, resize.startWidth + event.clientX - resize.startX),
+    );
+    setSidebarWidth(nextWidth);
+    localStorage.setItem("chatwave_sidebar_width", String(nextWidth));
+  };
+
+  const resizeSidebarEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (sidebarResizeRef.current?.pointerId !== event.pointerId) return;
+    sidebarResizeRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
 
   useEffect(() => {
     apiUsersRef.current = apiUsers;
@@ -227,6 +432,10 @@ export default function Home() {
         );
         return {
           ...chat,
+          pinned: Boolean(
+            chat.conversationId &&
+              pinnedConversationIds.includes(chat.conversationId),
+          ),
           online:
             chat.type === "direct"
               ? Boolean(
@@ -240,21 +449,27 @@ export default function Home() {
               : chat.onlineCount,
         };
       }),
-    [chatItems, connectedUser?.id, presenceByUser],
+    [chatItems, connectedUser?.id, pinnedConversationIds, presenceByUser],
   );
 
   const visibleChats = useMemo(
     () =>
-      displayChatItems.filter(
-        (chat) =>
-          (filter === "all" || chat.unread) &&
-          (navMode === "messages" ||
-            (navMode === "groups" && chat.type === "group") ||
-            (navMode === "mentions" && chat.unread)) &&
-          `${chat.title} ${chat.preview}`
-            .toLocaleLowerCase("ru")
-            .includes(query.toLocaleLowerCase("ru")),
-      ),
+      displayChatItems
+        .filter(
+          (chat) =>
+            (filter === "all" || chat.unread) &&
+            ((navMode === "messages" && chat.type !== "group") ||
+              (navMode === "groups" && chat.type === "group") ||
+              (navMode === "mentions" && chat.unread)) &&
+            `${chat.title} ${chat.preview}`
+              .toLocaleLowerCase("ru")
+              .includes(query.toLocaleLowerCase("ru")),
+        )
+        .sort(
+          (left, right) =>
+            Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) ||
+            (right.lastActivityAt ?? 0) - (left.lastActivityAt ?? 0),
+        ),
     [displayChatItems, filter, navMode, query],
   );
 
@@ -279,6 +494,7 @@ export default function Home() {
       members.push({
         initials: user.nickname.slice(0, 2).toUpperCase(),
         name: user.id === connectedUser?.id ? `${user.nickname} · вы` : user.nickname,
+        username: user.username,
         role:
           activeChat.type === "direct"
             ? user.bio || ""
@@ -304,6 +520,26 @@ export default function Home() {
   const callChat = call.conversationId
     ? chatItems.find((chat) => chat.conversationId === call.conversationId)
     : activeChat;
+
+  useEffect(() => {
+    if (
+      connectedUser &&
+      call.conversationId &&
+      !callChat
+    ) {
+      const timer = window.setTimeout(
+        () => void syncMissingConversation(call.conversationId!),
+        0,
+      );
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [
+    call.conversationId,
+    callChat,
+    connectedUser,
+    syncMissingConversation,
+  ]);
   const activeTypingUsers = activeChat.conversationId
     ? (typingByConversation[activeChat.conversationId] ?? [])
         .map((userId) => apiUsers[userId]?.nickname)
@@ -313,7 +549,9 @@ export default function Home() {
     ? presenceByUser[activeChat.recipientId]
     : undefined;
   const activePresenceText =
-    activeChat.type === "direct"
+    activeChat.type === "saved"
+      ? "Ваши сохранённые сообщения"
+      : activeChat.type === "direct"
       ? formatPresence(
           Boolean(activeRecipientPresence?.online),
           activeRecipientPresence?.last_online,
@@ -336,11 +574,39 @@ export default function Home() {
         setMessageSearchOpen(false);
         setMessageSearchQuery("");
         setMessageSearchResults([]);
+        return;
+      }
+      if (
+        event.key === "Escape" &&
+        activeChat.conversationId &&
+        !document.querySelector(
+          ".modal-backdrop, .profile-settings-backdrop, .media-lightbox, .call-backdrop",
+        )
+      ) {
+        event.preventDefault();
+        sendMessageSignal({
+          type: "typing.stop",
+          conversation_id: activeChat.conversationId,
+        });
+        setSelectedChat("empty");
+        setDraft("");
+        setEditingMessageId(null);
+        setReplyingToId(null);
+        setReactionPickerFor(null);
+        setDetailsOpen(false);
+        setMobileChats(false);
       }
     };
     window.addEventListener("keydown", handleSearchShortcut);
     return () => window.removeEventListener("keydown", handleSearchShortcut);
-  }, [activeChat.conversationId, connectedUser, messageSearchOpen]);
+  }, [
+    activeChat.conversationId,
+    connectedUser,
+    messageSearchOpen,
+    sendMessageSignal,
+    setDetailsOpen,
+    setMobileChats,
+  ]);
   const voiceRecorder = useVoiceRecorder({
     onRecorded: (file) => void uploadFile(file, true),
     onError: setNotice,
@@ -396,6 +662,13 @@ export default function Home() {
     setMessageSearchQuery("");
     setMessageSearchResults([]);
     setAddMembersOpen(false);
+    setDetailsOpen(false);
+    if (
+      window.matchMedia("(max-width: 720px)").matches &&
+      selectedChat !== chat.id
+    ) {
+      window.history.pushState({ chatwaveMobileChat: true }, "");
+    }
     setMobileChats(false);
     setChatItems((current) =>
       current.map((item) =>
@@ -405,6 +678,16 @@ export default function Home() {
     if (!chat.conversationId || !connectedUser) return;
     try {
       const apiMessages = await chatWaveApi.messages(chat.conversationId);
+      const incomingMessageIds = apiMessages
+        .filter((message) => message.sender_id !== connectedUser.id)
+        .map((message) => message.id);
+      if (incomingMessageIds.length) {
+        sendMessageSignal({
+          type: "message.read_batch",
+          conversation_id: chat.conversationId,
+          message_ids: incomingMessageIds,
+        });
+      }
       const mappedMessages = await mapApiMessages(
         apiMessages,
         chat,
@@ -425,14 +708,6 @@ export default function Home() {
           loading: false,
         },
       }));
-      apiMessages
-        .filter((message) => message.sender_id !== connectedUser.id)
-        .forEach((message) =>
-          sendMessageSignal({
-            type: "message.read",
-            message_id: message.id,
-          }),
-        );
     } catch {
       setNotice("Не удалось загрузить сообщения. Проверьте соединение с API.");
     }
@@ -444,7 +719,7 @@ export default function Home() {
     setNavigation(mode);
     const firstMatch = chatItems.find(
       (chat) =>
-        mode === "messages" ||
+        (mode === "messages" && chat.type !== "group") ||
         (mode === "groups" && chat.type === "group") ||
         (mode === "mentions" && chat.unread),
     );
@@ -463,10 +738,6 @@ export default function Home() {
     setApiUsers(workspace.users);
     apiUsersRef.current = workspace.users;
     setChatItems(workspace.chats);
-    await initializeCrypto(
-      user.id,
-      workspace.chats.flatMap((chat) => chat.memberIds ?? []),
-    );
 
     const selected =
       workspace.chats.find(
@@ -477,29 +748,64 @@ export default function Home() {
     if (!selected) {
       setMessagesByChat({});
       setHistoryByChat({});
+      setRealtimeReady(true);
       return;
     }
 
-    const initialMessages =
+    const initialMessages = await (
       selected === workspace.chats[0]
-        ? workspace.initialMessages
-        : await chatWaveApi.messages(selected.conversationId!);
+        ? workspace.loadInitialMessages()
+        : chatWaveApi.messages(selected.conversationId!)
+    ).catch(() => {
+      setNotice(
+        "Чаты загружены. Сообщения выбранного чата появятся после восстановления соединения.",
+      );
+      return [];
+    });
     const mappedInitialMessages = await mapApiMessages(
       initialMessages,
       selected,
       user,
     );
-    setMessagesByChat({ [selected.id]: mappedInitialMessages });
-    setHistoryByChat({
+    setMessagesByChat((current) => ({
+      ...current,
+      [selected.id]: mergeMessages(
+        current[selected.id] ?? [],
+        mappedInitialMessages,
+      ),
+    }));
+    setHistoryByChat((current) => ({
+      ...current,
       [selected.id]: {
         beforeId: initialMessages.at(-1)?.id,
         hasMore: initialMessages.length === PAGE_SIZE,
         loading: false,
       },
+    }));
+    setRealtimeReady(true);
+
+    void workspace
+      .loadMetadata()
+      .then((metadata) => {
+        setChatItems((current) =>
+          applyWorkspaceMetadata(current, metadata, user.id),
+        );
+      })
+      .catch(() => undefined);
+
+    void initializeCrypto(
+      user.id,
+      workspace.chats.flatMap((chat) => chat.memberIds ?? []),
+    ).catch((error) => {
+      console.error("ChatWave E2EE initialization failed", error);
+      setNotice(
+        "Чаты загружены, но защищённая синхронизация временно недоступна.",
+      );
     });
   };
 
   const connectAccount = async (user: ApiUser) => {
+    setRealtimeReady(false);
     setConnectedUser(user);
     setAuthState("authenticated");
     setWorkspaceLoading(true);
@@ -550,7 +856,6 @@ export default function Home() {
   };
 
   const logout = async () => {
-    setProfileOpen(false);
     try {
       await chatWaveApi.logout();
     } catch {
@@ -560,6 +865,7 @@ export default function Home() {
     stopCryptoPolling();
     closeCryptoMachine();
     setConnectedUser(null);
+    setRealtimeReady(false);
     setApiUsers({});
     setChatItems([]);
     setMessagesByChat({});
@@ -760,8 +1066,9 @@ export default function Home() {
         optimisticMessage.clientMessageId!,
         optimisticMessage.replyToId,
       );
+      const decryptedSaved = await decryptApiMessage(connectedUser.id, saved);
       const serverMessage = mapApiMessage(
-        saved,
+        decryptedSaved,
         activeChat,
         connectedUser,
         apiUsersRef.current,
@@ -772,19 +1079,17 @@ export default function Home() {
       };
       setMessagesByChat((current) => ({
         ...current,
-        [activeChat.id]: mergeMessages(
-          (current[activeChat.id] ?? []).filter(
-            (message) =>
-              message.id !== optimisticMessage.id && message.id !== saved.id,
-          ),
-          [serverMessage],
+        [activeChat.id]: reconcileOptimisticMessage(
+          current[activeChat.id] ?? [],
+          optimisticMessage.id,
+          serverMessage,
         ),
       }));
     } catch {
       setMessagesByChat((current) => ({
         ...current,
         [activeChat.id]: (current[activeChat.id] ?? []).map((message) =>
-          message.id === optimisticMessage.id
+          isSameOptimisticMessage(message, optimisticMessage)
             ? { ...message, pending: false, failed: true }
             : message,
         ),
@@ -802,7 +1107,7 @@ export default function Home() {
     setMessagesByChat((current) => ({
       ...current,
       [activeChat.id]: (current[activeChat.id] ?? []).map((item) =>
-        item.id === message.id
+        isSameOptimisticMessage(item, message)
           ? { ...item, pending: true, failed: false }
           : item,
       ),
@@ -829,12 +1134,14 @@ export default function Home() {
               retry.clientMessageId,
               retry.replyToId,
             );
+      const decryptedSaved = await decryptApiMessage(connectedUser.id, saved);
       const serverMessage = mapApiMessage(
-        saved,
+        decryptedSaved,
         activeChat,
         connectedUser,
         apiUsersRef.current,
       );
+      if (retry.kind === "text") serverMessage.text = retry.content;
       if (retry.file) {
         serverMessage.attachment = {
           name: retry.file.name,
@@ -843,30 +1150,30 @@ export default function Home() {
       }
       setMessagesByChat((current) => ({
         ...current,
-        [activeChat.id]: mergeMessages(
-          (current[activeChat.id] ?? []).filter(
-            (item) => item.id !== message.id && item.id !== saved.id,
-          ),
-          [serverMessage],
+        [activeChat.id]: reconcileOptimisticMessage(
+          current[activeChat.id] ?? [],
+          message.id,
+          serverMessage,
         ),
       }));
-    } catch {
+    } catch (reason) {
       setMessagesByChat((current) => ({
-        ...current,
-        [activeChat.id]: (current[activeChat.id] ?? []).map((item) =>
-          item.id === message.id
+      ...current,
+      [activeChat.id]: (current[activeChat.id] ?? []).map((item) =>
+          isSameOptimisticMessage(item, message)
             ? { ...item, pending: false, failed: true }
-            : item,
+          : item,
         ),
       }));
-      setNotice("Повторная отправка не удалась.");
+      const detail =
+        reason instanceof Error ? reason.message : String(reason);
+      console.error("ChatWave encrypted retry failed", reason);
+      setNotice(`Повторная отправка не удалась: ${detail}`);
     }
   };
 
-  const sendMessage = async (event: FormEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const content = draft.trim();
+  const sendMessage = async (nativeDraft?: string) => {
+    const content = (nativeDraft ?? draft).trim();
     if (!content) return;
     if (editingMessageId && activeChat.conversationId && connectedUser) {
       try {
@@ -894,7 +1201,7 @@ export default function Home() {
       optimisticIdRef.current--,
       content,
       replyToId,
-      Boolean(activeChat.conversationId && connectedUser),
+      false,
     );
     setMessagesByChat((current) => ({
       ...current,
@@ -903,7 +1210,12 @@ export default function Home() {
     setChatItems((current) =>
       current.map((chat) =>
         chat.id === activeChat.id
-          ? { ...chat, preview: content, time: optimisticMessage.time }
+          ? {
+              ...chat,
+              preview: content,
+              time: optimisticMessage.time,
+              lastActivityAt: Date.now(),
+            }
           : chat,
       ),
     );
@@ -924,42 +1236,54 @@ export default function Home() {
           optimisticMessage.clientMessageId!,
           replyToId,
         );
+        const decryptedSaved = await decryptApiMessage(connectedUser.id, saved);
         const serverMessage = mapApiMessage(
-          saved,
+          decryptedSaved,
           activeChat,
           connectedUser,
           apiUsersRef.current,
         );
+        // The sender already owns the plaintext. Keeping it here also avoids a
+        // visible blank/error frame if the WebSocket echo and REST ack race.
+        serverMessage.text = content;
         setMessagesByChat((current) => ({
           ...current,
-          [activeChat.id]: mergeMessages(
-            (current[activeChat.id] ?? []).filter(
-              (message) =>
-                message.id !== optimisticMessage.id && message.id !== saved.id,
-            ),
-            [serverMessage],
+          [activeChat.id]: reconcileOptimisticMessage(
+            current[activeChat.id] ?? [],
+            optimisticMessage.id,
+            serverMessage,
           ),
         }));
-      } catch {
+      } catch (reason) {
         setMessagesByChat((current) => ({
           ...current,
           [activeChat.id]: (current[activeChat.id] ?? []).map((message) =>
-            message.id === optimisticMessage.id
+            isSameOptimisticMessage(message, optimisticMessage)
               ? { ...message, pending: false, failed: true }
               : message,
           ),
         }));
-        setNotice("Сообщение не отправлено. Проверьте соединение с сервером.");
+        const detail =
+          reason instanceof Error ? reason.message : String(reason);
+        console.error("ChatWave encrypted send failed", reason);
+        setNotice(`Сообщение не отправлено: ${detail}`);
       }
     }
   };
 
   if (!hydrated || authState === "checking") {
     return (
-      <AuthScreen
-        checking
-        onAuthenticated={(user) => void connectAccount(user)}
-      />
+      <main className="app-canvas session-boot" data-theme={theme}>
+        <div className="aurora aurora-one" />
+        <div className="aurora aurora-two" />
+        <Image
+          src="/chatwave-logo.svg"
+          alt=""
+          width={44}
+          height={44}
+          priority
+        />
+      </main>
     );
   }
 
@@ -977,7 +1301,14 @@ export default function Home() {
     >
       <div className="aurora aurora-one" />
       <div className="aurora aurora-two" />
-      <section className="messenger-shell">
+      <section
+        className="messenger-shell"
+        style={
+          {
+            "--chat-sidebar-width": `${sidebarWidth}px`,
+          } as CSSProperties
+        }
+      >
         <aside className="server-rail" aria-label="Навигация">
           <div className="brand-mark" title="ChatWave">
             <Image src="/chatwave-logo.svg" alt="ChatWave" width={42} height={42} />
@@ -985,7 +1316,8 @@ export default function Home() {
           <div className="rail-divider" />
           <button
             className={`rail-button ${navMode === "messages" ? "active" : ""}`}
-            aria-label="Сообщения"
+            aria-label="Личные чаты"
+            title="Личные чаты"
             onClick={() => switchNavigation("messages")}
           >
             <MessageCircleMore size={21} />
@@ -993,7 +1325,8 @@ export default function Home() {
           </button>
           <button
             className={`rail-button ${navMode === "groups" ? "active" : ""}`}
-            aria-label="Команды"
+            aria-label="Группы"
+            title="Группы"
             onClick={() => switchNavigation("groups")}
           >
             <Users size={21} />
@@ -1025,54 +1358,21 @@ export default function Home() {
           >
             {theme === "dark" ? <Sun size={20} /> : <MoonStar size={20} />}
           </button>
-          <button className="rail-avatar" onClick={() => setProfileOpen(!profileOpen)}>
-            {connectedUser.avatar_name ? (
-              <img
-                src={chatWaveApi.avatarUrl(connectedUser.avatar_name) ?? ""}
-                alt=""
-              />
-            ) : (
-              <span>
-                {connectedUser?.nickname?.slice(0, 2).toUpperCase() ?? "АК"}
-              </span>
-            )}
-            <i />
-          </button>
-          {profileOpen && (
-            <div className="profile-popover">
-              <strong>{connectedUser.nickname}</strong>
-              <span>
-                {connectedUser?.username
-                  ? `@${connectedUser.username}`
-                  : "Аккаунт ChatWave"}
-              </span>
-              <button onClick={() => void logout()}>
-                <LogOut size={15} />
-                Выйти
-              </button>
-              <button
-                onClick={() => {
-                  setProfileOpen(false);
-                  setProfileSettingsOpen(true);
-                }}
-              >
-                <Settings size={15} />
-                Настройки
-              </button>
-            </div>
-          )}
         </aside>
 
         <ChatSidebar
           chats={visibleChats}
           selectedChatId={selectedChat}
           mobileOpen={mobileChats}
-          navMode={navMode}
           filter={filter}
           query={query}
           unreadCount={unreadChatsCount}
+          currentUser={connectedUser}
+          compact={sidebarWidth <= 112}
+          activeGroupCalls={
+            call.phase === "idle" ? call.availableGroupCalls : []
+          }
           onSelectChat={(chat) => void selectChat(chat)}
-          onNavigationChange={switchNavigation}
           onFilterChange={setFilter}
           onQueryChange={setQuery}
           onNewConversation={() => setNewConversationOpen(true)}
@@ -1080,19 +1380,50 @@ export default function Home() {
             setProfileSettingsOpen(true);
             setMobileChats(false);
           }}
+          onTogglePin={togglePinnedChat}
+          onJoinGroupCall={(activeCall) =>
+            void call.joinAvailableGroupCall(activeCall)
+          }
+          onResizeStart={resizeSidebarStart}
+          onResizeMove={resizeSidebarMove}
+          onResizeEnd={resizeSidebarEnd}
         />
 
         <section className="conversation">
+          {chatBackground && (
+            <div className="chat-background-layer" aria-hidden="true">
+              {chatBackground.mediaType.startsWith("video/") ? (
+                <video
+                  src={chatBackground.url}
+                  autoPlay
+                  muted
+                  loop
+                  playsInline
+                />
+              ) : (
+                <img src={chatBackground.url} alt="" />
+              )}
+              <span />
+            </div>
+          )}
           <header className="conversation-header">
             <button
               className="mobile-menu"
-              aria-label="Открыть список чатов"
-              onClick={() => setMobileChats(true)}
+              aria-label="Назад к списку чатов"
+              onClick={() => {
+                if (window.history.state?.chatwaveMobileChat) {
+                  window.history.back();
+                } else {
+                  setMobileChats(true);
+                }
+              }}
             >
-              <Menu size={21} />
+              <ArrowLeft size={21} />
             </button>
             <span className={`avatar avatar-${activeChat.accent} header-avatar`}>
-              {activeChat.avatarUrl ? (
+              {activeChat.type === "saved" ? (
+                <Bookmark size={19} fill="currentColor" />
+              ) : activeChat.avatarUrl ? (
                 <img src={activeChat.avatarUrl} alt="" />
               ) : (
                 activeChat.initials
@@ -1111,45 +1442,50 @@ export default function Home() {
               </span>
             </div>
             <div className="header-actions">
-              {iconButton(
-                "Позвонить",
-                <Phone size={18} />,
-                "",
-                activeChat.conversationId
-                  ? () =>
-                      call.start(
-                        activeChat.conversationId!,
-                        "audio",
-                        activeChat.type === "group",
-                      )
-                  : undefined,
-                !connectedUser ||
-                  !call.ready ||
-                  !activeChat.conversationId ||
-                  call.phase !== "idle",
+              {activeChat.type !== "saved" && (
+                <>
+                  {iconButton(
+                    "Позвонить",
+                    <Phone size={18} />,
+                    "",
+                    activeChat.conversationId
+                      ? () =>
+                          call.start(
+                            activeChat.conversationId!,
+                            "audio",
+                            activeChat.type === "group",
+                          )
+                      : undefined,
+                    !connectedUser ||
+                      !call.ready ||
+                      !activeChat.conversationId ||
+                      call.phase !== "idle",
+                  )}
+                  {iconButton(
+                    "Видеозвонок",
+                    <Video size={19} />,
+                    "mobile-hide-compact",
+                    activeChat.conversationId
+                      ? () =>
+                          call.start(
+                            activeChat.conversationId!,
+                            "video",
+                            activeChat.type === "group",
+                          )
+                      : undefined,
+                    !connectedUser ||
+                      !call.ready ||
+                      !activeChat.conversationId ||
+                      call.phase !== "idle",
+                  )}
+                </>
               )}
-              {iconButton(
-                "Видеозвонок",
-                <Video size={19} />,
-                "",
-                activeChat.conversationId
-                  ? () =>
-                      call.start(
-                        activeChat.conversationId!,
-                        "video",
-                        activeChat.type === "group",
-                      )
-                  : undefined,
-                !connectedUser ||
-                  !call.ready ||
-                  !activeChat.conversationId ||
-                  call.phase !== "idle",
-              )}
-              {iconButton("Закреплённые сообщения", <Pin size={18} />)}
               {iconButton(
                 "Выбрать сообщения",
                 <ListChecks size={18} />,
-                messageSelectionActive ? "active" : "",
+                `mobile-hide-compact ${
+                  messageSelectionActive ? "active" : ""
+                }`,
                 () => {
                   setMessageSelectionOpen(!messageSelectionActive);
                   setMessageSelectionChatId(
@@ -1269,6 +1605,7 @@ export default function Home() {
                       : [...current, messageId],
                   )
                 }
+                onOpenProfile={setViewingProfileId}
               />
 
               <MessageComposer
@@ -1281,7 +1618,7 @@ export default function Home() {
                 recordingSeconds={voiceRecorder.seconds}
                 fileInputRef={fileInputRef}
                 onDraftChange={handleDraftChange}
-                onSubmit={sendMessage}
+                onSend={(value) => void sendMessage(value)}
                 onFileSelected={(file) => void uploadFile(file)}
                 onCancelEditing={cancelEditing}
                 onCancelReply={cancelReply}
@@ -1295,6 +1632,7 @@ export default function Home() {
                   void voiceRecorder.start();
                 }}
                 onStopRecording={voiceRecorder.stop}
+                onCancelRecording={voiceRecorder.cancel}
               />
             </div>
 
@@ -1314,6 +1652,17 @@ export default function Home() {
                   ? () => setAddMembersOpen(true)
                   : undefined
               }
+              onGroupUpdated={() => {
+                const conversationId = activeChat.conversationId;
+                if (!conversationId) return;
+                void refreshWorkspace(connectedUser, conversationId)
+                  .then(() => setNotice("Профиль группы обновлён."))
+                  .catch(() =>
+                    setNotice(
+                      "Изменения сохранены, но список чатов пока не обновился.",
+                    ),
+                  );
+              }}
             />
           </div>
         </section>
@@ -1348,6 +1697,41 @@ export default function Home() {
           onPasswordChanged={() => {
             setProfileSettingsOpen(false);
             void logout();
+          }}
+        />
+      )}
+      {viewingProfileId && apiUsers[viewingProfileId] && (
+        <UserProfileModal
+          user={apiUsers[viewingProfileId]}
+          own={viewingProfileId === connectedUser.id}
+          onClose={() => setViewingProfileId(null)}
+          onEditOwnProfile={() => {
+            setViewingProfileId(null);
+            setProfileSettingsOpen(true);
+          }}
+          onMessage={() => {
+            const userId = viewingProfileId;
+            setViewingProfileId(null);
+            const existingChat = chatItems.find(
+              (chat) =>
+                chat.type === "direct" && chat.recipientId === userId,
+            );
+            if (existingChat) {
+              void selectChat(existingChat);
+              return;
+            }
+            void chatWaveApi
+              .createPrivateConversation(userId)
+              .then((conversation) =>
+                createConversationFinished(conversation.id),
+              )
+              .catch((reason) =>
+                setNotice(
+                  reason instanceof Error
+                    ? reason.message
+                    : "Не удалось открыть диалог.",
+                ),
+              );
           }}
         />
       )}
@@ -1388,25 +1772,64 @@ export default function Home() {
           title={callChat?.title ?? "Звонок ChatWave"}
           initials={callChat?.initials ?? "CW"}
           localStream={call.localStream}
+          localScreenStream={call.localScreenStream}
           remoteStream={call.remoteStream}
           groupCall={call.groupCall}
           remoteStreams={call.remoteStreams}
+          remoteScreenStream={call.remoteScreenStream}
+          groupScreenStreams={call.groupScreenStreams}
+          remoteScreenAudioStream={call.remoteScreenAudioStream}
+          groupScreenAudioStreams={call.groupScreenAudioStreams}
           remoteMediaStates={call.remoteMediaStates}
           muted={call.muted}
           cameraOff={call.cameraOff}
           screenSharing={call.screenSharing}
           screenAudioSharing={call.screenAudioSharing}
+          screenShareQuality={call.screenShareQuality}
           remoteScreenSharing={call.remoteScreenSharing}
           remoteScreenAudioSharing={call.remoteScreenAudioSharing}
           remoteMuted={call.remoteMuted}
+          remoteCameraEnabled={call.remoteCameraEnabled}
+          audioOutputDeviceId={call.audioOutputDeviceId}
+          currentParticipant={{
+            name: connectedUser.nickname,
+            initials: connectedUser.nickname.slice(0, 2).toUpperCase(),
+            avatarUrl:
+              chatWaveApi.avatarUrl(connectedUser.avatar_name) ?? undefined,
+          }}
+          participants={Object.fromEntries(
+            (callChat?.memberIds ?? []).map((userId) => {
+              const participant = apiUsers[userId];
+              const name =
+                participant?.nickname ??
+                participant?.username ??
+                `Участник #${userId}`;
+              return [
+                userId,
+                {
+                  name,
+                  initials: name.slice(0, 2).toUpperCase(),
+                  avatarUrl:
+                    chatWaveApi.avatarUrl(participant?.avatar_name) ??
+                    undefined,
+                },
+              ];
+            }),
+          )}
           screenShareError={call.screenShareError}
+          desktopScreenSources={call.desktopScreenSources}
           error={call.error}
           onAccept={call.accept}
+          onRetry={call.retry}
           onEnd={call.end}
           onClose={call.reset}
           onToggleMute={call.toggleMute}
           onToggleCamera={call.toggleCamera}
           onToggleScreenShare={call.toggleScreenShare}
+          onToggleScreenAudio={call.toggleScreenAudio}
+          onScreenShareQualityChange={call.setScreenShareQuality}
+          onSelectDesktopScreenSource={call.selectDesktopScreenSource}
+          onCancelDesktopScreenPicker={call.cancelDesktopScreenPicker}
         />
       )}
       {mobileChats && (
@@ -1432,57 +1855,67 @@ export default function Home() {
 }
 
 function GroupStreamTile({
-  userId,
   stream,
-  video,
-  volume,
+  name,
+  initials,
+  avatarUrl,
   screenSharing,
-  screenAudio,
   microphoneMuted,
+  videoEnabled,
+  local = false,
 }: {
-  userId: number;
-  stream: MediaStream;
-  video: boolean;
-  volume: number;
+  stream: MediaStream | null;
+  name: string;
+  initials: string;
+  avatarUrl?: string;
   screenSharing: boolean;
-  screenAudio: boolean;
   microphoneMuted: boolean;
+  videoEnabled: boolean;
+  local?: boolean;
 }) {
-  const mediaElement = useRef<HTMLVideoElement | HTMLAudioElement>(null);
+  const mediaElement = useRef<HTMLVideoElement>(null);
   const tile = useRef<HTMLDivElement>(null);
+  const hasVideo = videoEnabled && Boolean(
+    stream
+      ?.getVideoTracks()
+      .some((track) => track.readyState === "live" && !track.muted && track.enabled),
+  );
 
   useEffect(() => {
     if (!mediaElement.current) return;
     mediaElement.current.srcObject = stream;
-    mediaElement.current.volume = volume;
-  }, [stream, volume, video]);
+    void mediaElement.current.play().catch(() => undefined);
+  }, [stream, hasVideo]);
 
-  if (!video) {
-    return (
-      <audio
-        ref={mediaElement as RefObject<HTMLAudioElement>}
-        autoPlay
-        aria-label={`Звук участника ${userId}`}
-      />
-    );
-  }
   return (
     <div
       ref={tile}
-      className={`group-video-tile ${screenSharing ? "screen-share-tile" : ""}`}
+      className={`group-video-tile ${screenSharing ? "screen-share-tile" : ""} ${
+        hasVideo ? "has-video" : "voice-only"
+      }`}
     >
-      <video
-        ref={mediaElement as RefObject<HTMLVideoElement>}
-        autoPlay
-        playsInline
-        onDoubleClick={() => {
-          if (screenSharing) void tile.current?.requestFullscreen();
-        }}
-      />
+      {hasVideo ? (
+        <video
+          ref={mediaElement}
+          autoPlay
+          muted
+          playsInline
+          onDoubleClick={() => {
+            if (screenSharing) void tile.current?.requestFullscreen();
+          }}
+        />
+      ) : (
+        <div className="group-participant-avatar">
+          {avatarUrl ? <img src={avatarUrl} alt="" /> : <span>{initials}</span>}
+          <i />
+          <i />
+        </div>
+      )}
       <span>
         {microphoneMuted && <MicOff size={13} aria-label="Микрофон выключен" />}
-        Участник #{userId}
-        {screenAudio ? " · экран со звуком" : screenSharing ? " · экран" : ""}
+        {name}
+        {local ? " · Вы" : ""}
+        {screenSharing ? " · демонстрация" : ""}
       </span>
       {screenSharing && (
         <button
@@ -1498,107 +1931,394 @@ function GroupStreamTile({
   );
 }
 
+function StreamAudioPlayer({
+  stream,
+  volume,
+  muted,
+  outputDeviceId = "",
+}: {
+  stream: MediaStream;
+  volume: number;
+  muted: boolean;
+  outputDeviceId?: string;
+}) {
+  const audio = useRef<HTMLAudioElement>(null);
+  useEffect(() => {
+    if (!audio.current) return;
+    audio.current.srcObject = stream;
+    audio.current.volume = volume;
+    audio.current.muted = muted;
+    if ("setSinkId" in audio.current) {
+      void audio.current.setSinkId(outputDeviceId).catch(() => undefined);
+    }
+    void audio.current.play().catch(() => undefined);
+  }, [muted, outputDeviceId, stream, volume]);
+  return <audio ref={audio} autoPlay />;
+}
+
+function DesktopScreenPicker({
+  sources,
+  onSelect,
+  onCancel,
+}: {
+  sources: DesktopScreenSource[];
+  onSelect: (sourceId: string, withAudio: boolean) => void;
+  onCancel: () => void;
+}) {
+  const supportsSystemAudio =
+    window.chatWaveDesktop?.supportsSystemAudio ?? false;
+  const [withAudio, setWithAudio] = useState(false);
+  const [sourceTab, setSourceTab] = useState<"window" | "screen">(
+    sources.some((source) => source.kind === "window")
+      ? "window"
+      : "screen",
+  );
+  const visibleSources = sources.filter(
+    (source) => source.kind === sourceTab,
+  );
+  return (
+    <div className="desktop-screen-picker-backdrop">
+      <section className="desktop-screen-picker" role="dialog" aria-modal="true">
+        <header>
+          <div>
+            <strong>Что транслировать?</strong>
+            <span>Выберите экран или окно</span>
+          </div>
+          <button onClick={onCancel} aria-label="Закрыть">
+            <X size={19} />
+          </button>
+        </header>
+        <nav className="desktop-screen-tabs" aria-label="Тип источника">
+          <button
+            className={sourceTab === "window" ? "active" : ""}
+            onClick={() => setSourceTab("window")}
+            disabled={!sources.some((source) => source.kind === "window")}
+          >
+            Отдельное окно
+          </button>
+          <button
+            className={sourceTab === "screen" ? "active" : ""}
+            onClick={() => setSourceTab("screen")}
+            disabled={!sources.some((source) => source.kind === "screen")}
+          >
+            Весь экран
+          </button>
+        </nav>
+        <div className="desktop-screen-grid">
+          {visibleSources.map((source) => (
+            <button
+              key={source.id}
+              onClick={() => onSelect(source.id, withAudio)}
+            >
+              <img src={source.thumbnail} alt="" />
+              <span>
+                {source.appIcon && <img src={source.appIcon} alt="" />}
+                <b>{source.name}</b>
+              </span>
+            </button>
+          ))}
+        </div>
+        <footer>
+          <label>
+            <input
+              type="checkbox"
+              checked={withAudio}
+              disabled={!supportsSystemAudio}
+              onChange={(event) => setWithAudio(event.currentTarget.checked)}
+            />
+            {supportsSystemAudio
+              ? "Передавать системный звук"
+              : "Системный звук доступен в Windows"}
+          </label>
+          <small>ChatWave Desktop · до 1440p / 60 FPS</small>
+        </footer>
+      </section>
+    </div>
+  );
+}
+
 function CallOverlay({
   phase,
   media,
   title,
   initials,
   localStream,
+  localScreenStream,
   remoteStream,
   groupCall,
   remoteStreams,
+  remoteScreenStream,
+  groupScreenStreams,
+  remoteScreenAudioStream,
+  groupScreenAudioStreams,
   remoteMediaStates,
   muted,
   cameraOff,
   screenSharing,
   screenAudioSharing,
+  screenShareQuality,
   remoteScreenSharing,
   remoteScreenAudioSharing,
   remoteMuted,
+  remoteCameraEnabled,
+  audioOutputDeviceId,
+  currentParticipant,
+  participants,
   screenShareError,
+  desktopScreenSources,
   error,
   onAccept,
+  onRetry,
   onEnd,
   onClose,
   onToggleMute,
   onToggleCamera,
   onToggleScreenShare,
+  onToggleScreenAudio,
+  onScreenShareQualityChange,
+  onSelectDesktopScreenSource,
+  onCancelDesktopScreenPicker,
 }: {
   phase: CallPhase;
   media: CallMedia;
   title: string;
   initials: string;
   localStream: MediaStream | null;
+  localScreenStream: MediaStream | null;
   remoteStream: MediaStream | null;
   groupCall: boolean;
   remoteStreams: Record<number, MediaStream>;
+  remoteScreenStream: MediaStream | null;
+  groupScreenStreams: Record<number, MediaStream>;
+  remoteScreenAudioStream: MediaStream | null;
+  groupScreenAudioStreams: Record<number, MediaStream>;
   remoteMediaStates: Record<
     number,
-    { screenSharing: boolean; screenAudio: boolean; microphoneMuted: boolean }
+    {
+      screenSharing: boolean;
+      screenAudio: boolean;
+      microphoneMuted: boolean;
+      cameraEnabled: boolean;
+    }
   >;
   muted: boolean;
   cameraOff: boolean;
   screenSharing: boolean;
   screenAudioSharing: boolean;
+  screenShareQuality: ScreenShareQuality;
   remoteScreenSharing: boolean;
   remoteScreenAudioSharing: boolean;
   remoteMuted: boolean;
+  remoteCameraEnabled: boolean;
+  audioOutputDeviceId: string;
+  currentParticipant: {
+    name: string;
+    initials: string;
+    avatarUrl?: string;
+  };
+  participants: Record<
+    number,
+    { name: string; initials: string; avatarUrl?: string }
+  >;
   screenShareError: string;
+  desktopScreenSources: DesktopScreenSource[];
   error: string;
   onAccept: () => void;
+  onRetry: () => void;
   onEnd: () => void;
   onClose: () => void;
   onToggleMute: () => void;
   onToggleCamera: () => void;
   onToggleScreenShare: () => void;
+  onToggleScreenAudio: () => void;
+  onScreenShareQualityChange: (quality: ScreenShareQuality) => void;
+  onSelectDesktopScreenSource: (
+    sourceId: string,
+    withAudio: boolean,
+  ) => void;
+  onCancelDesktopScreenPicker: () => void;
 }) {
   const remoteVideo = useRef<HTMLVideoElement>(null);
   const remoteAudio = useRef<HTMLAudioElement>(null);
+  const remoteScreenAudio = useRef<HTMLAudioElement>(null);
   const localVideo = useRef<HTMLVideoElement>(null);
+  const localStage = useRef<HTMLDivElement>(null);
   const remoteStage = useRef<HTMLDivElement>(null);
   const callWindow = useRef<HTMLElement>(null);
+  const screenControlsTimer = useRef<number | null>(null);
+  const dragState = useRef<{
+    pointerId: number;
+    x: number;
+    y: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
   const [screenFullscreen, setScreenFullscreen] = useState(false);
+  const [screenControlsVisible, setScreenControlsVisible] = useState(true);
   const [viewMode, setViewMode] = useState<
     "window" | "minimized" | "fullscreen"
   >("window");
-  const [remoteVolume, setRemoteVolume] = useState(1);
+  const [remoteVoiceVolume, setRemoteVoiceVolume] = useState(1);
+  const [remoteScreenVolume, setRemoteScreenVolume] = useState(1);
+  const [remotePlaybackMuted, setRemotePlaybackMuted] = useState(false);
+  const [volumeMenu, setVolumeMenu] = useState<{
+    kind: "voice" | "screen";
+    x: number;
+    y: number;
+  } | null>(null);
+  const [localPreviewExpanded, setLocalPreviewExpanded] = useState(false);
+  const [callPosition, setCallPosition] = useState({ x: 0, y: 0 });
+  const [mobileCallDevice, setMobileCallDevice] = useState(false);
   const remoteHasVideo = Boolean(
     remoteStream
       ?.getVideoTracks()
       .some((track) => track.readyState === "live" && !track.muted),
   );
-  const localHasVideo = Boolean(
-    localStream
+  const remoteHasScreenVideo = Boolean(
+    remoteScreenStream
+      ?.getVideoTracks()
+      .some((track) => track.readyState === "live" && !track.muted),
+  );
+  const remoteScreenActive = remoteScreenSharing && remoteHasScreenVideo;
+  const remoteVisualActive =
+    remoteScreenActive || (remoteHasVideo && remoteCameraEnabled);
+  const primaryRemoteVisualStream = remoteScreenActive
+    ? remoteScreenStream
+    : remoteStream;
+  const localPreviewStream =
+    screenSharing && localScreenStream ? localScreenStream : localStream;
+  const localHasPreviewVideo = Boolean(
+    localPreviewStream
       ?.getVideoTracks()
       .some((track) => track.readyState === "live" && track.enabled),
   );
-  const groupVideoStreams = Object.entries(remoteStreams).filter(
-    ([, stream]) =>
-      stream
-        .getVideoTracks()
-        .some((track) => track.readyState === "live" && !track.muted),
-  );
-  const groupAudioStreams = Object.entries(remoteStreams).filter(
-    ([, stream]) =>
-      !stream
-        .getVideoTracks()
-        .some((track) => track.readyState === "live" && !track.muted),
+  const groupParticipantIds = [
+    ...new Set(
+      [
+        ...Object.keys(remoteStreams),
+        ...Object.keys(remoteMediaStates),
+        ...Object.keys(groupScreenStreams),
+      ].map(Number),
+    ),
+  ];
+  const groupAudioStreams = Object.entries(remoteStreams).filter(([, stream]) =>
+    stream.getAudioTracks().some((track) => track.readyState === "live"),
   );
 
   useEffect(() => {
-    if (remoteVideo.current) remoteVideo.current.srcObject = remoteStream;
-    if (remoteAudio.current) remoteAudio.current.srcObject = remoteStream;
-  }, [remoteStream]);
+    setMobileCallDevice(
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+        window.matchMedia("(max-width: 760px) and (pointer: coarse)").matches,
+    );
+  }, []);
+
   useEffect(() => {
-    if (localVideo.current) localVideo.current.srcObject = localStream;
-  }, [localStream, viewMode]);
+    const callActive =
+      phase === "incoming" ||
+      phase === "outgoing" ||
+      phase === "connecting" ||
+      phase === "active";
+    window.ChatWaveAndroid?.setCallActive(callActive);
+    return () => window.ChatWaveAndroid?.setCallActive(false);
+  }, [phase]);
+
   useEffect(() => {
-    if (remoteVideo.current) remoteVideo.current.volume = remoteVolume;
-    if (remoteAudio.current) remoteAudio.current.volume = remoteVolume;
-  }, [remoteStream, remoteVolume, viewMode]);
+    const video = remoteVideo.current;
+    const audio = remoteAudio.current;
+    if (video) {
+      video.srcObject = primaryRemoteVisualStream;
+      video.muted = true;
+      void video.play().catch(() => {
+        // The next user interaction will satisfy autoplay restrictions.
+      });
+    }
+    if (audio) {
+      audio.srcObject = remoteStream;
+      audio.muted = false;
+      audio.volume = remoteVoiceVolume;
+      if ("setSinkId" in audio) {
+        void audio.setSinkId(audioOutputDeviceId).catch(() => undefined);
+      }
+      const play = () => void audio.play().catch(() => undefined);
+      play();
+      audio.addEventListener("loadedmetadata", play);
+      audio.addEventListener("canplay", play);
+      document.addEventListener("pointerdown", play, { once: true });
+      const audioTrack = remoteStream?.getAudioTracks()[0];
+      audioTrack?.addEventListener("unmute", play);
+      return () => {
+        audio.removeEventListener("loadedmetadata", play);
+        audio.removeEventListener("canplay", play);
+        document.removeEventListener("pointerdown", play);
+        audioTrack?.removeEventListener("unmute", play);
+      };
+    }
+  }, [
+    audioOutputDeviceId,
+    primaryRemoteVisualStream,
+    remoteStream,
+    remoteVoiceVolume,
+    viewMode,
+  ]);
+  useEffect(() => {
+    const screenAudio = remoteScreenAudio.current;
+    if (!screenAudio) return;
+    screenAudio.srcObject = remoteScreenAudioStream;
+    screenAudio.muted = remotePlaybackMuted;
+    screenAudio.volume = remoteScreenVolume;
+    if ("setSinkId" in screenAudio) {
+      void screenAudio
+        .setSinkId(audioOutputDeviceId)
+        .catch(() => undefined);
+    }
+    void screenAudio.play().catch(() => {
+      // The next user interaction will satisfy autoplay restrictions.
+    });
+  }, [
+    remotePlaybackMuted,
+    audioOutputDeviceId,
+    remoteScreenAudioStream,
+    remoteScreenVolume,
+    viewMode,
+  ]);
+  useEffect(() => {
+    if (localVideo.current) localVideo.current.srcObject = localPreviewStream;
+  }, [localPreviewStream, viewMode]);
+  useEffect(() => {
+    if (remoteVideo.current) remoteVideo.current.volume = remoteVoiceVolume;
+    if (remoteAudio.current) remoteAudio.current.volume = remoteVoiceVolume;
+  }, [remoteStream, remoteVoiceVolume, viewMode]);
+
+  useEffect(() => {
+    if (!volumeMenu) return;
+    const close = () => setVolumeMenu(null);
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("blur", close);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("blur", close);
+    };
+  }, [volumeMenu]);
+
+  const openVolumeMenu = (
+    event: ReactMouseEvent<HTMLElement>,
+    kind: "voice" | "screen",
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = callWindow.current?.getBoundingClientRect();
+    setVolumeMenu({
+      kind,
+      x: Math.max(12, event.clientX - (rect?.left ?? 0)),
+      y: Math.max(12, event.clientY - (rect?.top ?? 0)),
+    });
+  };
   useEffect(() => {
     const updateFullscreenState = () => {
-      setScreenFullscreen(document.fullscreenElement === remoteStage.current);
+      const isScreenFullscreen =
+        document.fullscreenElement === remoteStage.current;
+      setScreenFullscreen(isScreenFullscreen);
+      setScreenControlsVisible(true);
       if (document.fullscreenElement === callWindow.current) {
         setViewMode("fullscreen");
       } else {
@@ -1615,13 +2335,32 @@ function CallOverlay({
       document.removeEventListener("fullscreenchange", updateFullscreenState);
   }, []);
   useEffect(() => {
+    if (!screenFullscreen) {
+      if (screenControlsTimer.current) {
+        window.clearTimeout(screenControlsTimer.current);
+        screenControlsTimer.current = null;
+      }
+      return;
+    }
+    screenControlsTimer.current = window.setTimeout(() => {
+      setScreenControlsVisible(false);
+      screenControlsTimer.current = null;
+    }, 2_500);
+    return () => {
+      if (screenControlsTimer.current) {
+        window.clearTimeout(screenControlsTimer.current);
+        screenControlsTimer.current = null;
+      }
+    };
+  }, [screenFullscreen]);
+  useEffect(() => {
     if (
-      !remoteScreenSharing &&
+      !remoteScreenActive &&
       document.fullscreenElement === remoteStage.current
     ) {
       void document.exitFullscreen();
     }
-  }, [remoteScreenSharing]);
+  }, [remoteScreenActive]);
 
   const toggleScreenFullscreen = async () => {
     try {
@@ -1633,6 +2372,31 @@ function CallOverlay({
       }
     } catch {
       // The browser can reject fullscreen when its permissions change.
+    }
+  };
+
+  const revealScreenControls = () => {
+    if (!screenFullscreen) return;
+    setScreenControlsVisible(true);
+    if (screenControlsTimer.current) {
+      window.clearTimeout(screenControlsTimer.current);
+    }
+    screenControlsTimer.current = window.setTimeout(() => {
+      setScreenControlsVisible(false);
+      screenControlsTimer.current = null;
+    }, 2_500);
+  };
+
+  const openLocalPreviewFullscreen = async () => {
+    try {
+      if (document.fullscreenElement === localStage.current) {
+        await document.exitFullscreen();
+      } else {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        await localStage.current?.requestFullscreen();
+      }
+    } catch {
+      setLocalPreviewExpanded(true);
     }
   };
 
@@ -1663,6 +2427,51 @@ function CallOverlay({
     }
   };
 
+  const startCallDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (viewMode !== "window") return;
+    dragState.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      originX: callPosition.x,
+      originY: callPosition.y,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const moveCall = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = dragState.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const rect = callWindow.current?.getBoundingClientRect();
+    const requestedX = drag.originX + event.clientX - drag.x;
+    const requestedY = drag.originY + event.clientY - drag.y;
+    if (!rect) {
+      setCallPosition({ x: requestedX, y: requestedY });
+      return;
+    }
+    const deltaX = requestedX - callPosition.x;
+    const deltaY = requestedY - callPosition.y;
+    const boundedDeltaX = Math.min(
+      Math.max(deltaX, 12 - rect.left),
+      window.innerWidth - 12 - rect.right,
+    );
+    const boundedDeltaY = Math.min(
+      Math.max(deltaY, 12 - rect.top),
+      window.innerHeight - 12 - rect.bottom,
+    );
+    setCallPosition({
+      x: callPosition.x + boundedDeltaX,
+      y: callPosition.y + boundedDeltaY,
+    });
+  };
+
+  const stopCallDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (dragState.current?.pointerId === event.pointerId) {
+      dragState.current = null;
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
   const status = {
     incoming: groupCall
       ? media === "video"
@@ -1678,44 +2487,87 @@ function CallOverlay({
     idle: "",
   }[phase];
 
+  const audioOutputs = (
+    <>
+      {!groupCall && remoteStream?.getAudioTracks().length ? (
+        <audio ref={remoteAudio} autoPlay aria-label="Звук собеседника" />
+      ) : null}
+      {!groupCall && remoteScreenAudioStream && (
+        <audio
+          ref={remoteScreenAudio}
+          autoPlay
+          aria-label="Звук демонстрации"
+        />
+      )}
+      {groupCall &&
+        Object.entries(groupScreenAudioStreams).map(([userId, stream]) => (
+          <StreamAudioPlayer
+            key={`screen-audio-${userId}`}
+            stream={stream}
+            volume={remoteScreenVolume}
+            muted={remotePlaybackMuted}
+            outputDeviceId={audioOutputDeviceId}
+          />
+        ))}
+      {groupCall &&
+        groupAudioStreams.map(([userId, stream]) => (
+          <StreamAudioPlayer
+            key={`voice-${userId}`}
+            stream={stream}
+            volume={remoteVoiceVolume}
+            muted={false}
+            outputDeviceId={audioOutputDeviceId}
+          />
+        ))}
+    </>
+  );
+
   if (viewMode === "minimized") {
     return (
-      <div className="call-backdrop call-overlay-minimized" role="presentation">
-        <section className="call-mini-window" aria-label={`Звонок с ${title}`}>
-          <button
-            className="call-mini-main"
-            onClick={() => setViewMode("window")}
-            aria-label="Раскрыть звонок"
-          >
-            <span className="call-mini-avatar">{initials}</span>
-            <span>
-              <strong>{title}</strong>
-              <small>{status}</small>
-            </span>
-          </button>
-          <button
-            className="call-mini-action"
-            onClick={() => setViewMode("fullscreen")}
-            aria-label="Развернуть звонок на весь экран"
-            title="На весь экран"
-          >
-            <Maximize2 size={17} />
-          </button>
-          <button
-            className="call-mini-action end"
-            onClick={onEnd}
-            aria-label="Завершить звонок"
-            title="Завершить"
-          >
-            <PhoneOff size={17} />
-          </button>
-        </section>
-      </div>
+      <>
+        {audioOutputs}
+        <div
+          className="call-backdrop call-overlay-minimized"
+          role="presentation"
+        >
+          <section className="call-mini-window" aria-label={`Звонок с ${title}`}>
+            <button
+              className="call-mini-main"
+              onClick={() => setViewMode("window")}
+              aria-label="Раскрыть звонок"
+            >
+              <span className="call-mini-avatar">{initials}</span>
+              <span>
+                <strong>{title}</strong>
+                <small>{status}</small>
+              </span>
+            </button>
+            <button
+              className="call-mini-action"
+              onClick={() => setViewMode("fullscreen")}
+              aria-label="Развернуть звонок на весь экран"
+              title="На весь экран"
+            >
+              <Maximize2 size={17} />
+            </button>
+            <button
+              className="call-mini-action end"
+              onClick={onEnd}
+              aria-label="Завершить звонок"
+              title="Завершить"
+            >
+              <PhoneOff size={17} />
+            </button>
+          </section>
+        </div>
+      </>
     );
   }
 
   return (
-    <div
+    <>
+      {audioOutputs}
+      <div
       className={`call-backdrop ${
         viewMode === "fullscreen" ? "call-overlay-fullscreen" : ""
       }`}
@@ -1724,9 +2576,18 @@ function CallOverlay({
       <section
         ref={callWindow}
         className={`call-window ${media === "video" ? "video-call" : "audio-call"} ${
+          groupCall ? "group-call" : ""
+        } ${
           viewMode === "fullscreen" ? "call-window-fullscreen" : ""
         }`}
         role="dialog"
+        style={
+          viewMode === "window"
+            ? {
+                transform: `translate3d(${callPosition.x}px, ${callPosition.y}px, 0)`,
+              }
+            : undefined
+        }
         aria-modal="false"
         aria-labelledby="call-title"
         onWheel={(event) => {
@@ -1737,6 +2598,17 @@ function CallOverlay({
         }}
       >
         <div className="call-aurora" />
+        <button
+          className="call-drag-handle"
+          onPointerDown={startCallDrag}
+          onPointerMove={moveCall}
+          onPointerUp={stopCallDrag}
+          onPointerCancel={stopCallDrag}
+          aria-label="Переместить окно звонка"
+          title="Перетащить окно"
+        >
+          <span />
+        </button>
         <div className="call-window-actions">
           <button
             onClick={() => void minimizeCall()}
@@ -1761,116 +2633,210 @@ function CallOverlay({
             )}
           </button>
         </div>
-        {!groupCall && !remoteHasVideo && (
-          <audio ref={remoteAudio} autoPlay aria-label="Звук собеседника" />
-        )}
-        {groupCall && groupAudioStreams.length > 0 && (
-          <>
-            {groupAudioStreams.map(([userId, stream]) => (
-              <GroupStreamTile
-                key={userId}
-                userId={Number(userId)}
-                stream={stream}
-                video={false}
-                volume={remoteVolume}
-                screenSharing={
-                  remoteMediaStates[Number(userId)]?.screenSharing ?? false
-                }
-                screenAudio={
-                  remoteMediaStates[Number(userId)]?.screenAudio ?? false
-                }
-                microphoneMuted={
-                  remoteMediaStates[Number(userId)]?.microphoneMuted ?? false
-                }
-              />
-            ))}
-          </>
-        )}
-        {groupCall && groupVideoStreams.length > 0 ? (
+        {groupCall ? (
           <div
             className={`group-video-grid group-video-grid-${Math.min(
-              groupVideoStreams.length,
-              4,
+              1 +
+                groupParticipantIds.length +
+                groupParticipantIds.filter(
+                  (userId) =>
+                    remoteMediaStates[userId]?.screenSharing &&
+                    groupScreenStreams[userId],
+                ).length +
+                (screenSharing && localScreenStream ? 1 : 0),
+              6,
             )}`}
           >
-            {groupVideoStreams.map(([userId, stream]) => (
+            <GroupStreamTile
+              key="local-participant"
+              stream={localStream}
+              name={currentParticipant.name}
+              initials={currentParticipant.initials}
+              avatarUrl={currentParticipant.avatarUrl}
+              screenSharing={false}
+              microphoneMuted={muted}
+              videoEnabled={!cameraOff}
+              local
+            />
+            {screenSharing && localScreenStream && (
               <GroupStreamTile
-                key={`grid-${userId}`}
-                userId={Number(userId)}
-                stream={stream}
-                video
-                volume={remoteVolume}
-                screenSharing={
-                  remoteMediaStates[Number(userId)]?.screenSharing ?? false
-                }
-                screenAudio={
-                  remoteMediaStates[Number(userId)]?.screenAudio ?? false
-                }
-                microphoneMuted={
-                  remoteMediaStates[Number(userId)]?.microphoneMuted ?? false
-                }
+                key="local-screen"
+                stream={localScreenStream}
+                name={`${currentParticipant.name} · Экран`}
+                initials={currentParticipant.initials}
+                avatarUrl={currentParticipant.avatarUrl}
+                screenSharing
+                microphoneMuted={muted}
+                videoEnabled
+                local
               />
-            ))}
+            )}
+            {groupParticipantIds.map((userId) => {
+              const participant = participants[userId] ?? {
+                name: `Участник #${userId}`,
+                initials: String(userId).slice(-2),
+              };
+              return (
+                <GroupStreamTile
+                  key={`participant-${userId}`}
+                  stream={remoteStreams[userId] ?? null}
+                  name={participant.name}
+                  initials={participant.initials}
+                  avatarUrl={participant.avatarUrl}
+                  screenSharing={false}
+                  microphoneMuted={
+                    remoteMediaStates[userId]?.microphoneMuted ?? false
+                  }
+                  videoEnabled={
+                    remoteMediaStates[userId]?.cameraEnabled ?? false
+                  }
+                />
+              );
+            })}
+            {groupParticipantIds
+              .filter(
+                (userId) =>
+                  remoteMediaStates[userId]?.screenSharing &&
+                  groupScreenStreams[userId],
+              )
+              .map((userId) => {
+                const participant = participants[userId] ?? {
+                  name: `Участник #${userId}`,
+                  initials: String(userId).slice(-2),
+                };
+                return (
+                  <GroupStreamTile
+                    key={`screen-${userId}`}
+                    stream={groupScreenStreams[userId]}
+                    name={`${participant.name} · Экран`}
+                    initials={participant.initials}
+                    avatarUrl={participant.avatarUrl}
+                    screenSharing
+                    microphoneMuted={
+                      remoteMediaStates[userId]?.microphoneMuted ?? false
+                    }
+                    videoEnabled
+                  />
+                );
+              })}
           </div>
-        ) : remoteHasVideo && !groupCall && remoteStream ? (
+        ) : remoteVisualActive && primaryRemoteVisualStream ? (
           <div
             ref={remoteStage}
-            className={`remote-stage ${remoteScreenSharing ? "screen-share-stage" : ""}`}
+            className={`remote-stage ${remoteScreenActive ? "screen-share-stage" : ""}`}
+            onPointerMove={revealScreenControls}
+            onPointerDown={revealScreenControls}
+            onContextMenu={(event) =>
+              openVolumeMenu(
+                event,
+                remoteScreenActive ? "screen" : "voice",
+              )
+            }
           >
             <video
               ref={remoteVideo}
-              className={`remote-video ${remoteScreenSharing ? "screen-share-video" : ""}`}
+              className={`remote-video ${remoteScreenActive ? "screen-share-video" : ""}`}
               autoPlay
+              muted
               playsInline
               onDoubleClick={
-                remoteScreenSharing ? toggleScreenFullscreen : undefined
+                remoteScreenActive ? toggleScreenFullscreen : undefined
               }
             />
-            {remoteScreenSharing && (
-              <button
-                className="screen-fullscreen-button"
-                onClick={toggleScreenFullscreen}
-                aria-label={
-                  screenFullscreen
-                    ? "Выйти из полноэкранного режима"
-                    : "Развернуть демонстрацию на весь экран"
-                }
-                title={
-                  screenFullscreen
-                    ? "Выйти из полноэкранного режима"
-                    : "На весь экран"
-                }
+            {remoteScreenActive && (
+              <div
+                className={`screen-stage-controls ${
+                  !screenFullscreen || screenControlsVisible ? "visible" : ""
+                }`}
               >
-                {screenFullscreen ? (
-                  <Minimize2 size={20} />
-                ) : (
-                  <Maximize2 size={20} />
+                <button
+                  className="screen-fullscreen-button"
+                  onClick={toggleScreenFullscreen}
+                  aria-label={
+                    screenFullscreen
+                      ? "Выйти из полноэкранного режима"
+                      : "Развернуть демонстрацию на весь экран"
+                  }
+                  title={
+                    screenFullscreen
+                      ? "Выйти из полноэкранного режима"
+                      : "На весь экран"
+                  }
+                >
+                  {screenFullscreen ? (
+                    <Minimize2 size={20} />
+                  ) : (
+                    <Maximize2 size={20} />
+                  )}
+                </button>
+                <button
+                  className={`screen-audio-button ${
+                    remotePlaybackMuted ? "muted" : ""
+                  }`}
+                  onClick={() => {
+                    setRemotePlaybackMuted((current) => {
+                      const next = !current;
+                      if (!next && remoteScreenVolume === 0) {
+                        setRemoteScreenVolume(1);
+                      }
+                      return next;
+                    });
+                  }}
+                  aria-label={
+                    remotePlaybackMuted
+                      ? "Включить звук демонстрации"
+                      : "Выключить звук демонстрации"
+                  }
+                  title={
+                    remotePlaybackMuted
+                      ? "Включить звук демонстрации"
+                      : "Выключить звук демонстрации"
+                  }
+                >
+                  {remotePlaybackMuted ? (
+                    <VolumeX size={20} />
+                  ) : (
+                    <Volume2 size={20} />
+                  )}
+                </button>
+                {screenFullscreen && (
+                  <button
+                    className="screen-leave-button"
+                    onClick={onEnd}
+                    aria-label="Завершить звонок"
+                    title="Завершить звонок"
+                  >
+                    <PhoneOff size={20} />
+                  </button>
                 )}
-              </button>
+              </div>
             )}
           </div>
-        ) : !remoteHasVideo && groupVideoStreams.length === 0 ? (
-          <div className="call-avatar-wrap">
+        ) : !remoteVisualActive ? (
+          <div
+            className="call-avatar-wrap"
+            onContextMenu={(event) => openVolumeMenu(event, "voice")}
+          >
             <span className="call-avatar">{initials}</span>
             <i />
             <i />
           </div>
         ) : null}
 
-        {groupCall && groupAudioStreams.some(
-          ([userId]) =>
-            remoteMediaStates[Number(userId)]?.microphoneMuted,
-        ) && (
+        {groupCall &&
+          groupParticipantIds.some(
+            (userId) => remoteMediaStates[userId]?.microphoneMuted,
+          ) && (
           <div className="group-muted-list" aria-live="polite">
-            {groupAudioStreams
+            {groupParticipantIds
               .filter(
-                ([userId]) =>
-                  remoteMediaStates[Number(userId)]?.microphoneMuted,
+                (userId) => remoteMediaStates[userId]?.microphoneMuted,
               )
-              .map(([userId]) => (
+              .map((userId) => (
                 <span key={`muted-${userId}`}>
                   <MicOff size={14} />
-                  Участник #{userId} выключил микрофон
+                  {(participants[userId]?.name ?? `Участник #${userId}`)}{" "}
+                  выключил микрофон
                 </span>
               ))}
           </div>
@@ -1893,7 +2859,7 @@ function CallOverlay({
               Собеседник выключил микрофон
             </small>
           )}
-          {remoteScreenSharing && (
+          {remoteScreenActive && (
             <small className="screen-share-status">
               Собеседник демонстрирует экран · до 1440p / 60 FPS
               {remoteScreenAudioSharing ? " · со звуком" : ""}
@@ -1901,7 +2867,8 @@ function CallOverlay({
           )}
           {screenSharing && (
             <small className="screen-share-status">
-              Демонстрация экрана · до 1440p / 60 FPS
+              Демонстрация экрана ·{" "}
+              {SCREEN_SHARE_PRESETS[screenShareQuality].label}
               {screenAudioSharing
                 ? " · звук передаётся"
                 : " · включите звук в окне выбора"}
@@ -1913,14 +2880,52 @@ function CallOverlay({
           {phase === "error" && <small className="call-error">{error}</small>}
         </div>
 
-        {localHasVideo && localStream && (
-          <video
-            ref={localVideo}
-            className={`local-video ${screenSharing ? "screen-share-preview" : ""}`}
-            autoPlay
-            muted
-            playsInline
-          />
+        {!groupCall && localHasPreviewVideo && localPreviewStream && (
+          <div
+            ref={localStage}
+            className={`local-preview-stage ${
+              screenSharing ? "screen-share-preview" : ""
+            } ${localPreviewExpanded ? "expanded" : ""}`}
+          >
+            <video
+              ref={localVideo}
+              className="local-video"
+              autoPlay
+              muted
+              playsInline
+              onDoubleClick={() => void openLocalPreviewFullscreen()}
+            />
+            <div className="local-preview-actions">
+              <button
+                onClick={() =>
+                  setLocalPreviewExpanded((current) => !current)
+                }
+                aria-label={
+                  localPreviewExpanded
+                    ? "Свернуть свой предпросмотр"
+                    : "Увеличить свой предпросмотр"
+                }
+                title={
+                  localPreviewExpanded
+                    ? "Вернуть миниатюру"
+                    : "Увеличить"
+                }
+              >
+                {localPreviewExpanded ? (
+                  <Minimize2 size={17} />
+                ) : (
+                  <Maximize2 size={17} />
+                )}
+              </button>
+              <button
+                onClick={() => void openLocalPreviewFullscreen()}
+                aria-label="Открыть свой предпросмотр на весь экран"
+                title="На весь экран"
+              >
+                <ScreenShare size={17} />
+              </button>
+            </div>
+          </div>
         )}
 
         <div className="call-controls">
@@ -1936,10 +2941,16 @@ function CallOverlay({
               </button>
             </>
           ) : phase === "error" ? (
-            <button className="call-button neutral" onClick={onClose}>
-              <X size={21} />
-              <span>Закрыть</span>
-            </button>
+            <>
+              <button className="call-button accept" onClick={onRetry}>
+                <Mic size={21} />
+                <span>Повторить</span>
+              </button>
+              <button className="call-button neutral" onClick={onClose}>
+                <X size={21} />
+                <span>Закрыть</span>
+              </button>
+            </>
           ) : (
             <>
               <button
@@ -1953,29 +2964,80 @@ function CallOverlay({
               <button
                 className={`call-button neutral ${cameraOff ? "disabled" : ""}`}
                 onClick={onToggleCamera}
-                disabled={screenSharing}
                 aria-label={cameraOff ? "Включить камеру" : "Выключить камеру"}
               >
                 {cameraOff ? <VideoOff size={21} /> : <Video size={21} />}
                 <span>{cameraOff ? "Включить" : "Камера"}</span>
               </button>
-              <button
-                className={`call-button neutral ${screenSharing ? "sharing" : ""}`}
-                onClick={onToggleScreenShare}
-                disabled={phase !== "connecting" && phase !== "active"}
-                aria-label={
-                  screenSharing
-                    ? "Остановить демонстрацию экрана"
-                    : "Начать демонстрацию экрана"
-                }
-              >
-                {screenSharing ? (
-                  <ScreenShareOff size={21} />
-                ) : (
-                  <ScreenShare size={21} />
-                )}
-                <span>{screenSharing ? "Остановить" : "Экран"}</span>
-              </button>
+              {!mobileCallDevice && (
+                <button
+                  className={`call-button neutral mobile-screen-share-control ${
+                    screenSharing ? "sharing" : ""
+                  }`}
+                  onClick={onToggleScreenShare}
+                  disabled={phase !== "connecting" && phase !== "active"}
+                  aria-label={
+                    screenSharing
+                      ? "Остановить демонстрацию экрана"
+                      : "Начать демонстрацию экрана"
+                  }
+                >
+                  {screenSharing ? (
+                    <ScreenShareOff size={21} />
+                  ) : (
+                    <ScreenShare size={21} />
+                  )}
+                  <span>{screenSharing ? "Остановить" : "Экран"}</span>
+                </button>
+              )}
+              {!mobileCallDevice && screenSharing && (
+                <button
+                  className={`call-button neutral mobile-screen-share-control ${
+                    screenAudioSharing ? "sharing" : "disabled"
+                  }`}
+                  onClick={onToggleScreenAudio}
+                  aria-label={
+                    screenAudioSharing
+                      ? "Выключить звук демонстрации"
+                      : "Включить звук демонстрации"
+                  }
+                >
+                  {screenAudioSharing ? (
+                    <Volume2 size={21} />
+                  ) : (
+                    <VolumeX size={21} />
+                  )}
+                  <span>
+                    {screenAudioSharing ? "Звук демо" : "Без звука"}
+                  </span>
+                </button>
+              )}
+              {!mobileCallDevice && (
+                <label
+                  className="call-quality mobile-screen-share-control"
+                  title="Качество демонстрации экрана"
+                >
+                  <ScreenShare size={16} />
+                  <select
+                    value={screenShareQuality}
+                    onChange={(event) =>
+                      onScreenShareQualityChange(
+                        event.currentTarget.value as ScreenShareQuality,
+                      )
+                    }
+                    disabled={screenSharing}
+                    aria-label="Качество демонстрации экрана"
+                  >
+                    {Object.entries(SCREEN_SHARE_PRESETS).map(
+                      ([quality, preset]) => (
+                        <option key={quality} value={quality}>
+                          {preset.label}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </label>
+              )}
               <label className="call-volume" title="Громкость собеседника">
                 <Volume2 size={19} />
                 <input
@@ -1983,13 +3045,13 @@ function CallOverlay({
                   min="0"
                   max="1"
                   step="0.05"
-                  value={remoteVolume}
+                  value={remoteVoiceVolume}
                   onChange={(event) =>
-                    setRemoteVolume(Number(event.currentTarget.value))
+                    setRemoteVoiceVolume(Number(event.currentTarget.value))
                   }
                   aria-label="Громкость собеседника"
                 />
-                <span>{Math.round(remoteVolume * 100)}%</span>
+                <span>{Math.round(remoteVoiceVolume * 100)}%</span>
               </label>
               <button className="call-button decline" onClick={onEnd}>
                 <PhoneOff size={21} />
@@ -1998,7 +3060,77 @@ function CallOverlay({
             </>
           )}
         </div>
+        {volumeMenu && (
+          <div
+            className="call-volume-context"
+            style={{ left: volumeMenu.x, top: volumeMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
+          >
+            <header>
+              {volumeMenu.kind === "screen" ? (
+                <ScreenShare size={15} />
+              ) : (
+                <Volume2 size={15} />
+              )}
+              <strong>
+                {volumeMenu.kind === "screen"
+                  ? "Звук демонстрации"
+                  : "Громкость собеседника"}
+              </strong>
+            </header>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={
+                volumeMenu.kind === "screen"
+                  ? remoteScreenVolume
+                  : remoteVoiceVolume
+              }
+              onChange={(event) => {
+                const value = Number(event.currentTarget.value);
+                if (volumeMenu.kind === "screen") {
+                  setRemoteScreenVolume(value);
+                  setRemotePlaybackMuted(value === 0);
+                } else {
+                  setRemoteVoiceVolume(value);
+                }
+              }}
+            />
+            <footer>
+              <button
+                onClick={() => {
+                  if (volumeMenu.kind === "screen") {
+                    setRemoteScreenVolume(0);
+                    setRemotePlaybackMuted(true);
+                  } else {
+                    setRemoteVoiceVolume(0);
+                  }
+                }}
+              >
+                Выключить
+              </button>
+              <span>
+                {Math.round(
+                  (volumeMenu.kind === "screen"
+                    ? remoteScreenVolume
+                    : remoteVoiceVolume) * 100,
+                )}
+                %
+              </span>
+            </footer>
+          </div>
+        )}
       </section>
-    </div>
+      {desktopScreenSources.length > 0 && (
+        <DesktopScreenPicker
+          sources={desktopScreenSources}
+          onSelect={onSelectDesktopScreenSource}
+          onCancel={onCancelDesktopScreenPicker}
+        />
+      )}
+      </div>
+    </>
   );
 }

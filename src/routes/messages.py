@@ -15,12 +15,14 @@ from services import (
     stream_file,
     pin_message,
     unpin_message,
+    transcribe_voice_message,
 )
 from schemas import (
     GetMessage,
     MessagesIds,
     ReactionAction,
     UpdateTextMessage,
+    VoiceTranscription,
 )
 
 messages_router = APIRouter(
@@ -75,6 +77,18 @@ async def get_message_media(
     if metadata["download"]:
         response.headers["Content-Disposition"] = f'attachment; filename="message-{message_id}"'
     return response
+
+
+@messages_router.post(
+    "/{message_id}/transcription",
+    status_code=status.HTTP_200_OK,
+    response_model=VoiceTranscription,
+)
+async def transcribe_message_voice(
+    current_user_id: Annotated[int, Depends(verify_token)],
+    message_id: int,
+):
+    return await transcribe_voice_message(current_user_id, message_id)
 
 
 @messages_router.get("/media", status_code=status.HTTP_200_OK)

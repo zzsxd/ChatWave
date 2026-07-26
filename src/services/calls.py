@@ -10,11 +10,13 @@ from repository import (
     insert_call_history_message,
     select_message,
     select_call_participants,
+    select_active_calls_for_user,
     select_conversation_members,
     transition_call_status,
 )
 from schemas import (
     AcceptCall,
+    ActiveGroupCall,
     CallAction,
     CallCandidate,
     CallHeartbeat,
@@ -101,6 +103,28 @@ async def _active_group_call_id(conversation_id: int) -> int | None:
     ):
         return None
     return call_id
+
+
+async def fetch_active_group_calls(user_id: int) -> list[ActiveGroupCall]:
+    active_calls: list[ActiveGroupCall] = []
+    for call in await select_active_calls_for_user(user_id):
+        if not await _is_group_call(call.id):
+            continue
+        media_value = await redis_client.get(_group_key(call.id))
+        media = (
+            media_value.decode()
+            if isinstance(media_value, bytes)
+            else str(media_value or "")
+        )
+        active_calls.append(
+            ActiveGroupCall(
+                call_id=call.id,
+                conversation_id=call.conversation_id,
+                media="video" if media == "video" else "audio",
+                participant_count=len(await _group_participants(call.id)),
+            )
+        )
+    return active_calls
 
 
 async def _record_call_history(call, outcome: str) -> None:
@@ -392,6 +416,7 @@ async def _handle_media_state(
             "screen_sharing": signal.screen_sharing,
             "screen_audio": signal.screen_audio,
             "microphone_muted": signal.microphone_muted,
+            "camera_enabled": signal.camera_enabled,
         },
     )
 
@@ -465,7 +490,7 @@ async def _handle_group_start(
         await redis_client.set(lock_key, str(call_id), ex=ACTIVE_CALL_LOCK_SECONDS)
         await redis_client.set(
             _group_key(call_id),
-            "1",
+            signal.media,
             ex=GROUP_CALL_TTL_SECONDS,
         )
         await redis_client.sadd(_group_participants_key(call_id), current_user_id)
@@ -602,6 +627,7 @@ async def _handle_group_media_state(
                 "screen_sharing": signal.screen_sharing,
                 "screen_audio": signal.screen_audio,
                 "microphone_muted": signal.microphone_muted,
+                "camera_enabled": signal.camera_enabled,
             },
         )
 

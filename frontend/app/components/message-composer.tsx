@@ -1,8 +1,15 @@
 "use client";
 
-import { ClipboardEvent, FormEvent, RefObject } from "react";
 import {
-  Gift,
+  ClipboardEvent,
+  FormEvent,
+  KeyboardEvent,
+  RefObject,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
   MessageCircleMore,
   Mic,
   Paperclip,
@@ -15,6 +22,39 @@ import {
 } from "lucide-react";
 import { Chat, Message } from "../models";
 
+const COMPOSER_EMOJIS = [
+  "😀",
+  "😂",
+  "🥰",
+  "😍",
+  "😎",
+  "🤔",
+  "🥳",
+  "😴",
+  "😭",
+  "😡",
+  "👍",
+  "👎",
+  "👏",
+  "🙏",
+  "💪",
+  "🤝",
+  "❤️",
+  "💙",
+  "🔥",
+  "✨",
+  "🎉",
+  "💯",
+  "🚀",
+  "👀",
+  "✅",
+  "❌",
+  "💬",
+  "📎",
+  "🌊",
+  "⚡",
+];
+
 type MessageComposerProps = {
   chat: Chat;
   draft: string;
@@ -25,12 +65,13 @@ type MessageComposerProps = {
   recordingSeconds: number;
   fileInputRef: RefObject<HTMLInputElement | null>;
   onDraftChange: (value: string) => void;
-  onSubmit: (event: FormEvent) => void;
+  onSend: (value: string) => void;
   onFileSelected: (file: File) => void;
   onCancelEditing: () => void;
   onCancelReply: () => void;
   onStartRecording: () => void;
   onStopRecording: () => void;
+  onCancelRecording: () => void;
 };
 
 export function MessageComposer({
@@ -43,14 +84,79 @@ export function MessageComposer({
   recordingSeconds,
   fileInputRef,
   onDraftChange,
-  onSubmit,
+  onSend,
   onFileSelected,
   onCancelEditing,
   onCancelReply,
   onStartRecording,
   onStopRecording,
+  onCancelRecording,
 }: MessageComposerProps) {
   const disabled = !chat.conversationId;
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const composerInputRef = useRef<HTMLInputElement>(null);
+  const composerFieldRef = useRef<HTMLDivElement>(null);
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
+  const composingRef = useRef(false);
+  const nativeDraftRef = useRef(draft);
+
+  useEffect(() => {
+    if (!emojiOpen) return;
+    const closePicker = (event: PointerEvent) => {
+      if (composerFieldRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setEmojiOpen(false);
+    };
+    document.addEventListener("pointerdown", closePicker);
+    return () => document.removeEventListener("pointerdown", closePicker);
+  }, [emojiOpen]);
+
+  useEffect(() => {
+    if (disabled) return;
+    const frame = requestAnimationFrame(() => composerInputRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [chat.id, disabled]);
+
+  useEffect(() => {
+    nativeDraftRef.current = draft;
+    const input = composerInputRef.current;
+    if (!input || composingRef.current || input.value === draft) return;
+
+    const cursor = Math.min(input.selectionStart ?? draft.length, draft.length);
+    input.value = draft;
+    if (document.activeElement === input) {
+      input.setSelectionRange(cursor, cursor);
+    }
+  }, [chat.id, draft]);
+
+  const updateNativeDraft = (value: string) => {
+    nativeDraftRef.current = value;
+    onDraftChange(value);
+  };
+
+  const sendFromComposer = () => {
+    setEmojiOpen(false);
+    const value = composerInputRef.current?.value ?? nativeDraftRef.current;
+    onSend(value);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  };
+
+  const insertEmoji = (emoji: string) => {
+    const input = composerInputRef.current;
+    const currentDraft = input?.value ?? nativeDraftRef.current;
+    const start = input?.selectionStart ?? currentDraft.length;
+    const end = input?.selectionEnd ?? start;
+    const nextDraft = `${currentDraft.slice(0, start)}${emoji}${currentDraft.slice(end)}`;
+    if (input) input.value = nextDraft;
+    updateNativeDraft(nextDraft);
+    requestAnimationFrame(() => {
+      input?.focus();
+      const cursor = start + emoji.length;
+      input?.setSelectionRange(cursor, cursor);
+    });
+  };
+
   const pasteImage = (event: ClipboardEvent<HTMLInputElement>) => {
     if (disabled || uploadingFile) return;
     const imageItem = Array.from(event.clipboardData.items).find(
@@ -103,16 +209,10 @@ export function MessageComposer({
           </button>
         </div>
       )}
-      <form
+      <div
         className="composer"
-        noValidate
-        onSubmit={(event) => {
-          // Prevent the browser's native form navigation even if the async
-          // message handler throws or is replaced while the component is live.
-          event.preventDefault();
-          event.stopPropagation();
-          onSubmit(event);
-        }}
+        role="group"
+        aria-label="Отправка сообщения"
       >
         <input
           ref={fileInputRef}
@@ -126,19 +226,46 @@ export function MessageComposer({
         <button
           type="button"
           aria-label="Добавить файл"
-          className={uploadingFile ? "uploading" : ""}
+          className={`composer-file-button ${uploadingFile ? "uploading" : ""}`}
           disabled={uploadingFile || disabled}
           onClick={() => fileInputRef.current?.click()}
         >
           <Plus size={20} />
         </button>
-        <div className="composer-field">
+        <div ref={composerFieldRef} className="composer-field">
           <input
-            value={draft}
-            onChange={(event) => onDraftChange(event.target.value)}
+            ref={composerInputRef}
+            defaultValue={draft}
+            onInput={(event: FormEvent<HTMLInputElement>) => {
+              updateNativeDraft(event.currentTarget.value);
+            }}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onCompositionEnd={(event) => {
+              composingRef.current = false;
+              updateNativeDraft(event.currentTarget.value);
+            }}
             onPaste={pasteImage}
+            onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
+              if (
+                event.key !== "Enter" ||
+                event.nativeEvent.isComposing ||
+                event.repeat
+              ) {
+                return;
+              }
+              event.preventDefault();
+              event.stopPropagation();
+              sendFromComposer();
+            }}
             aria-label="Новое сообщение"
             disabled={disabled}
+            autoCapitalize="sentences"
+            autoComplete="off"
+            autoCorrect="on"
+            enterKeyHint="send"
+            spellCheck
             placeholder={
               disabled
                 ? "Создайте чат, чтобы отправить сообщение"
@@ -152,26 +279,70 @@ export function MessageComposer({
           <span>
             <button
               type="button"
+              className="composer-paperclip-button"
               aria-label="Прикрепить файл"
               disabled={uploadingFile || disabled}
               onClick={() => fileInputRef.current?.click()}
             >
               <Paperclip size={18} />
             </button>
-            <button type="button" aria-label="Подарок" disabled={disabled}>
-              <Gift size={18} />
-            </button>
-            <button type="button" aria-label="Эмодзи" disabled={disabled}>
+            <button
+              type="button"
+              className={`composer-emoji-button ${emojiOpen ? "active" : ""}`}
+              aria-label="Эмодзи"
+              aria-expanded={emojiOpen}
+              disabled={disabled}
+              onClick={() => setEmojiOpen((current) => !current)}
+            >
               <Smile size={18} />
             </button>
           </span>
+          {emojiOpen && (
+            <div
+              ref={emojiPickerRef}
+              className="composer-emoji-picker"
+              role="dialog"
+              aria-label="Выбор эмодзи"
+            >
+              <div>
+                <strong>Эмодзи</strong>
+                <small>Добавьте настроение</small>
+              </div>
+              <span>
+                {COMPOSER_EMOJIS.map((emoji) => (
+                  <button
+                    type="button"
+                    key={emoji}
+                    onClick={() => insertEmoji(emoji)}
+                    aria-label={`Вставить ${emoji}`}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </span>
+            </div>
+          )}
         </div>
+        {recordingVoice && (
+          <button
+            type="button"
+            className="cancel-recording"
+            aria-label="Отменить голосовое сообщение"
+            title="Отменить запись"
+            onClick={onCancelRecording}
+          >
+            <X size={18} />
+          </button>
+        )}
         {draft.trim() ? (
           <button
             className="send-button"
-            type="submit"
+            type="button"
             aria-label="Отправить"
             disabled={disabled}
+            onClick={() => {
+              sendFromComposer();
+            }}
           >
             <Send size={18} />
           </button>
@@ -194,7 +365,7 @@ export function MessageComposer({
             )}
           </button>
         )}
-      </form>
+      </div>
     </>
   );
 }

@@ -242,6 +242,43 @@ async def test_group_join_is_idempotent_when_room_is_full(monkeypatch):
     )
 
 
+async def test_fetch_active_group_calls_returns_joinable_rooms(monkeypatch):
+    calls = [
+        SimpleNamespace(id=73, conversation_id=42),
+        SimpleNamespace(id=74, conversation_id=43),
+    ]
+    redis = AsyncMock()
+    redis.get.side_effect = [b"video"]
+
+    monkeypatch.setattr(calls_service, "redis_client", redis)
+    monkeypatch.setattr(
+        calls_service,
+        "select_active_calls_for_user",
+        AsyncMock(return_value=calls),
+    )
+    monkeypatch.setattr(
+        calls_service,
+        "_is_group_call",
+        AsyncMock(side_effect=[True, False]),
+    )
+    monkeypatch.setattr(
+        calls_service,
+        "_group_participants",
+        AsyncMock(return_value={11, 12, 13}),
+    )
+
+    result = await calls_service.fetch_active_group_calls(11)
+
+    assert [item.model_dump() for item in result] == [
+        {
+            "call_id": 73,
+            "conversation_id": 42,
+            "media": "video",
+            "participant_count": 3,
+        }
+    ]
+
+
 async def test_signaling_disconnect_cleans_up_tracked_calls(monkeypatch):
     class FakePubSub:
         async def subscribe(self, _channel):

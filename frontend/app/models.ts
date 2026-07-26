@@ -6,13 +6,16 @@ export type Chat = {
   initials: string;
   preview: string;
   time: string;
+  lastActivityAt?: number;
+  pinned?: boolean;
   unread?: number;
   online?: boolean;
   muted?: boolean;
   accent: string;
-  type: "group" | "direct";
+  type: "group" | "direct" | "saved";
   conversationId?: number;
   recipientId?: number;
+  recipientUsername?: string;
   memberIds?: number[];
   memberRoles?: Record<number, string>;
   currentUserRole?: string;
@@ -24,6 +27,7 @@ export type Chat = {
 
 export type Message = {
   id: number;
+  senderId?: number;
   author: string;
   initials: string;
   time: string;
@@ -91,9 +95,63 @@ const parseCallEvent = (content: string | null): Message["callEvent"] => {
   }
 };
 
+const callEventText = (
+  event: NonNullable<Message["callEvent"]>,
+  own: boolean,
+) =>
+  event.outcome === "completed"
+    ? own
+      ? "Исходящий звонок"
+      : "Входящий звонок"
+    : own
+      ? event.outcome === "cancelled"
+        ? "Отменённый звонок"
+        : "Звонок не состоялся"
+      : "Пропущенный звонок";
+
+export const apiMessagePreview = (
+  message: ApiMessage | null | undefined,
+  currentUserId: number,
+) => {
+  if (!message) return "";
+  const callEvent = parseCallEvent(message.content);
+  if (callEvent) {
+    return callEventText(callEvent, message.sender_id === currentUserId);
+  }
+  const content = message.content?.trim();
+  if (content) return content;
+  return {
+    voice: "Голосовое сообщение",
+    image: "Фотография",
+    video: "Видео",
+    audio: "Аудио",
+    file: message.original_file_name
+      ? `Файл: ${message.original_file_name}`
+      : "Файл",
+    text: "",
+  }[message.type];
+};
+
+export const messagePreview = (message: Message) =>
+  message.text.trim() ||
+  (message.callEvent
+    ? callEventText(message.callEvent, Boolean(message.own))
+    : {
+        voice: "Голосовое сообщение",
+        image: "Фотография",
+        video: "Видео",
+        audio: "Аудио",
+        file: message.attachment?.name
+          ? `Файл: ${message.attachment.name}`
+          : "Файл",
+        text: "",
+      }[message.messageType ?? "text"]) ||
+  "Новое сообщение";
+
 export type Member = {
   initials: string;
   name: string;
+  username?: string;
   role: string;
   accent: string;
   online?: boolean;
@@ -168,6 +226,7 @@ export const mapApiMessage = (
     : null;
   return {
     id: message.id,
+    senderId: message.sender_id,
     author: own ? "Вы" : sender?.nickname ?? chat.title,
     initials: own
       ? "Я"
@@ -179,16 +238,8 @@ export const mapApiMessage = (
         })
       : "",
     text: callEvent
-      ? callEvent.outcome === "completed"
-        ? own
-          ? "Исходящий звонок"
-          : "Входящий звонок"
-        : own
-          ? callEvent.outcome === "cancelled"
-            ? "Отменённый звонок"
-            : "Звонок не состоялся"
-          : "Пропущенный звонок"
-      : message.content ?? (message.type === "text" ? "" : `[${message.type}]`),
+      ? callEventText(callEvent, own)
+      : message.content?.trim() ?? "",
     accent: own ? "blue" : chat.accent,
     avatarUrl: chatWaveApi.avatarUrl(
       own ? currentUser.avatar_name : sender?.avatar_name,
@@ -244,6 +295,13 @@ export const mergeMessages = (current: Message[], incoming: Message[]) => {
             ...existing,
             ...message,
             attachment: message.attachment ?? existing.attachment,
+            ...(existing.pending && message.id > 0
+              ? {
+                  pending: false,
+                  failed: false,
+                  retry: undefined,
+                }
+              : {}),
           }
         : message,
     );

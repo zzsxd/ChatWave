@@ -48,6 +48,7 @@ class CreateUserDB(BaseModel):
 
 class PublicUser(BaseModel):
     id: int
+    username: Annotated[str, Field(min_length=3, max_length=64)]
     nickname: Annotated[str, Field(min_length=3, max_length=128)]
     bio: Optional[str]
     avatar_name: Optional[str]

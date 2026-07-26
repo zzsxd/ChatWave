@@ -7,7 +7,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Response, WebSocket, status
 
 from dependencies import verify_token
-from services import calls_listener, disconnect_call
+from services import calls_listener, disconnect_call, fetch_active_group_calls
+from schemas import ActiveGroupCall
 from utilities import generic_settings
 from .users import run_authenticated_websocket
 
@@ -44,6 +45,16 @@ async def get_ice_servers(
     current_user_id: Annotated[int, Depends(verify_token)],
 ):
     return build_ice_server_config(current_user_id)
+
+
+@calls_router.get(
+    "/active-groups",
+    response_model=list[ActiveGroupCall],
+)
+async def get_active_group_calls(
+    current_user_id: Annotated[int, Depends(verify_token)],
+):
+    return await fetch_active_group_calls(current_user_id)
 
 
 @calls_router.post(

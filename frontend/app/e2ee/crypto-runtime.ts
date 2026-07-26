@@ -7,10 +7,12 @@ import {
   UserId,
   initAsync,
 } from "@matrix-org/matrix-sdk-crypto-wasm";
+import matrixCryptoWasmUrl from "../../node_modules/@matrix-org/matrix-sdk-crypto-wasm/pkg/matrix_sdk_crypto_wasm_bg.wasm?url";
 
 const DEVICE_ID_KEY = "chatwave_e2ee_device_id";
 const STORE_SECRET_KEY = "chatwave_e2ee_store_secret";
 const DEVICE_SECRET_KEY = "chatwave_e2ee_device_secret";
+const WASM_CACHE_REVISION = "20260727-3";
 
 let wasmReady: Promise<void> | null = null;
 let activeMachine:
@@ -57,7 +59,16 @@ export async function getCryptoMachine(accountId: number) {
     activeMachine = null;
   }
 
-  wasmReady ??= initAsync();
+  if (!wasmReady) {
+    wasmReady = initAsync(
+      `${matrixCryptoWasmUrl}?v=${WASM_CACHE_REVISION}`,
+    ).catch((error) => {
+      // A transient network/cache error must not poison every later send and
+      // retry attempt for the lifetime of the tab.
+      wasmReady = null;
+      throw error;
+    });
+  }
   await wasmReady;
 
   const deviceId = persistentSecret(DEVICE_ID_KEY, 16).toUpperCase();

@@ -18,7 +18,7 @@ from .users import (
     remove_user_avatar,
     fetch_user_avatar_history,
     restore_user_avatar,
-    search_users_by_nickname,
+    search_users_by_username,
     fetch_user_conversations,
     remove_user_account,
     fetch_user_unread_messages,
@@ -28,6 +28,7 @@ from .users import (
 from .conversations import (
     create_private_conversation,
     create_group_conversation,
+    get_or_create_saved_conversation,
     edit_group_details,
     upload_group_avatar,
     fetch_group_avatar_metadata,
@@ -59,6 +60,7 @@ from .messages import (
     pin_message,
     unpin_message,
 )
+from .transcription import transcribe_voice_message
 from .unread_messages import add_unread_messages
-from .calls import calls_listener, disconnect_call
+from .calls import calls_listener, disconnect_call, fetch_active_group_calls
 from .message_events import message_events_listener

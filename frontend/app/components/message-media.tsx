@@ -1,21 +1,216 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Download,
   AudioLines,
+  Captions,
   FileText,
   Maximize2,
+  Pause,
+  Play,
   RefreshCw,
   Video,
-  Volume2,
   X,
 } from "lucide-react";
 import { chatWaveApi } from "../api";
 import { Message } from "../models";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
+
+const mediaBlobCache = new Map<number, Blob>();
+const pendingMediaLoads = new Map<number, Promise<Blob>>();
+const MAX_CACHED_MEDIA_ITEMS = 24;
+const MAX_CACHED_MEDIA_BYTES = 8 * 1024 * 1024;
+
+async function loadMediaBlob(messageId: number, cacheable: boolean) {
+  const cached = cacheable ? mediaBlobCache.get(messageId) : undefined;
+  if (cached) {
+    mediaBlobCache.delete(messageId);
+    mediaBlobCache.set(messageId, cached);
+    return cached;
+  }
+  const pending = pendingMediaLoads.get(messageId);
+  if (pending) return pending;
+  const request = chatWaveApi.downloadMedia(messageId);
+  pendingMediaLoads.set(messageId, request);
+  try {
+    const blob = await request;
+    if (cacheable && blob.size <= MAX_CACHED_MEDIA_BYTES) {
+      mediaBlobCache.set(messageId, blob);
+      while (mediaBlobCache.size > MAX_CACHED_MEDIA_ITEMS) {
+        const oldest = mediaBlobCache.keys().next().value;
+        if (typeof oldest !== "number") break;
+        mediaBlobCache.delete(oldest);
+      }
+    }
+    return blob;
+  } finally {
+    pendingMediaLoads.delete(messageId);
+  }
+}
+
+const formatPlaybackTime = (seconds: number) => {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+};
+
+function VoiceMessagePlayer({
+  messageId,
+  source,
+  onDownload,
+}: {
+  messageId: number;
+  source: string;
+  onDownload: () => void;
+}) {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [duration, setDuration] = useState(0);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [speed, setSpeed] = useState(1);
+  const [transcript, setTranscript] = useState<string | null>(null);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(
+    null,
+  );
+  const [transcribing, setTranscribing] = useState(false);
+  const waveform = useMemo(
+    () =>
+      Array.from({ length: 38 }, (_, index) => {
+        const primary = Math.abs(Math.sin(index * 1.67)) * 16;
+        const secondary = Math.abs(Math.cos(index * 0.73)) * 8;
+        return Math.round(5 + primary + secondary);
+      }),
+    [],
+  );
+  const progress = duration > 0 ? currentTime / duration : 0;
+
+  const togglePlayback = async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      await audio.play();
+    } else {
+      audio.pause();
+    }
+  };
+
+  const cycleSpeed = () => {
+    const nextSpeed = speed === 1 ? 1.5 : speed === 1.5 ? 2 : 1;
+    setSpeed(nextSpeed);
+    if (audioRef.current) audioRef.current.playbackRate = nextSpeed;
+  };
+
+  const transcribe = async () => {
+    if (transcribing) return;
+    setTranscribing(true);
+    setTranscriptionError(null);
+    try {
+      const result = await chatWaveApi.transcribeVoice(messageId);
+      setTranscript(result.text);
+    } catch (error) {
+      setTranscriptionError(
+        error instanceof Error ? error.message : "Не удалось расшифровать",
+      );
+    } finally {
+      setTranscribing(false);
+    }
+  };
+
+  return (
+    <div className="voice-message-shell">
+      <div className="voice-player">
+        <audio
+          ref={audioRef}
+          src={source}
+          preload="metadata"
+          onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+          onDurationChange={(event) => setDuration(event.currentTarget.duration)}
+          onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+          onPlay={() => setPlaying(true)}
+          onPause={() => setPlaying(false)}
+          onEnded={() => {
+            setPlaying(false);
+            setCurrentTime(0);
+          }}
+        />
+        <button
+          className="voice-play-button"
+          onClick={() => void togglePlayback()}
+          aria-label={playing ? "Пауза" : "Воспроизвести голосовое сообщение"}
+        >
+          {playing ? <Pause size={18} fill="currentColor" /> : <Play size={18} fill="currentColor" />}
+        </button>
+        <div className="voice-player-content">
+          <div className="voice-waveform" aria-hidden="true">
+            {waveform.map((height, index) => (
+              <i
+                key={index}
+                className={index / waveform.length <= progress ? "played" : ""}
+                style={{ height }}
+              />
+            ))}
+            <input
+              type="range"
+              min="0"
+              max={duration || 0}
+              step="0.01"
+              value={Math.min(currentTime, duration || 0)}
+              onChange={(event) => {
+                const nextTime = Number(event.target.value);
+                setCurrentTime(nextTime);
+                if (audioRef.current) audioRef.current.currentTime = nextTime;
+              }}
+              aria-label="Перемотать голосовое сообщение"
+            />
+          </div>
+          <div className="voice-player-meta">
+            <span>
+              {formatPlaybackTime(currentTime)} / {formatPlaybackTime(duration)}
+            </span>
+            <small>{playing ? "Воспроизводится" : "Голосовое сообщение"}</small>
+          </div>
+        </div>
+        <button
+          className="voice-speed"
+          onClick={cycleSpeed}
+          aria-label={`Скорость воспроизведения ${speed}x`}
+        >
+          {speed}×
+        </button>
+        <button
+          className="audio-download"
+          onClick={onDownload}
+          aria-label="Скачать голосовое сообщение"
+          title="Скачать"
+        >
+          <Download size={15} />
+        </button>
+      </div>
+      {transcript ? (
+        <div className="voice-transcript">
+          <Captions size={15} />
+          <p>{transcript}</p>
+        </div>
+      ) : (
+        <button
+          className={`voice-transcribe ${transcriptionError ? "error" : ""}`}
+          onClick={() => void transcribe()}
+          disabled={transcribing}
+          title="Аудио будет обработано на сервере ChatWave"
+        >
+          {transcribing ? <RefreshCw className="spin" size={14} /> : <Captions size={14} />}
+          <span>
+            {transcribing
+              ? "Расшифровываем…"
+              : transcriptionError ?? "Расшифровать"}
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
 
 export function MessageMedia({
   message,
@@ -44,7 +239,12 @@ export function MessageMedia({
     if (!previewable || message.id < 1 || !connected) return;
     setLoadState("loading");
     try {
-      const blob = await chatWaveApi.downloadMedia(message.id);
+      const blob = await loadMediaBlob(
+        message.id,
+        mediaType === "image" ||
+          mediaType === "audio" ||
+          mediaType === "voice",
+      );
       const objectUrl = URL.createObjectURL(blob);
       if (!activeRef.current) {
         URL.revokeObjectURL(objectUrl);
@@ -260,24 +460,34 @@ export function MessageMedia({
     );
   }
 
+  if (mediaType === "voice") {
+    return (
+      <div
+        ref={mediaContainer}
+        className="inline-media audio-message voice-message"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <VoiceMessagePlayer
+          messageId={message.id}
+          source={source}
+          onDownload={onDownload}
+        />
+      </div>
+    );
+  }
+
   return (
     <div
       ref={mediaContainer}
-      className={`inline-media audio-message ${
-        mediaType === "voice" ? "voice-message" : ""
-      }`}
+      className="inline-media audio-message"
       onClick={(event) => event.stopPropagation()}
     >
       <span className="audio-message-icon">
-        {mediaType === "voice" ? <Volume2 size={20} /> : <AudioLines size={20} />}
+        <AudioLines size={20} />
       </span>
       <div>
         <span className="audio-title">
-          <strong>
-            {mediaType === "voice"
-              ? "Голосовое сообщение"
-              : message.attachment.name}
-          </strong>
+          <strong>{message.attachment.name}</strong>
           <small>{message.attachment.size}</small>
         </span>
         <audio src={source} controls preload="metadata" />

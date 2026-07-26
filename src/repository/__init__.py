@@ -13,7 +13,7 @@ from .users import (
     select_user_with_unread,
     select_users,
     update_user,
-    select_users_by_nickname,
+    select_users_by_username,
     select_users_last_online,
     update_user_last_online,
     is_user_exists,
@@ -25,6 +25,7 @@ from .conversations import (
     select_conversation,
     create_private_conversation_atomic,
     create_group_conversation_atomic,
+    get_or_create_saved_conversation_atomic,
     select_conversation_by_id,
     select_conversations,
     update_conversation,
@@ -54,6 +55,7 @@ from .messages import (
     select_message,
     select_message_by_client_id,
     update_message,
+    update_voice_transcript,
     select_messages,
     select_filtered_messages,
     delete_conversation_messages,
@@ -94,6 +96,7 @@ from .calls import (
     insert_call,
     select_call,
     select_call_participants,
+    select_active_calls_for_user,
     transition_call_status,
 )
 from .e2ee import (

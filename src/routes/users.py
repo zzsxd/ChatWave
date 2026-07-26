@@ -50,7 +50,7 @@ from services import (
     remove_user_avatar,
     fetch_user_avatar_history,
     restore_user_avatar,
-    search_users_by_nickname,
+    search_users_by_username,
     fetch_user_conversations,
     remove_user_account,
     leave_group,
@@ -92,10 +92,13 @@ async def get_users(
 
 @users_router.get("/search", status_code=status.HTTP_200_OK, response_model=list[PublicUser])
 async def search_users(
-        search_query: str = Query(min_length=3, max_length=128),
+        search_query: str = Query(min_length=1, max_length=64),
         limit: int = Query(50, ge=1, le=100),
 ):
-    users_objects = await search_users_by_nickname(search_query=search_query, limit=limit)
+    users_objects = await search_users_by_username(
+        search_query=search_query,
+        limit=limit,
+    )
     return users_objects
 
 

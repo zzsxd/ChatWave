@@ -59,9 +59,12 @@ test.describe("ChatWave messenger", () => {
     await page.goto("/");
     await waitForMessenger(page);
 
-    await page.getByRole("button", { name: "Открыть список чатов" }).click();
     await expect(page.locator(".chat-sidebar")).toHaveClass(/mobile-open/);
-    await page.getByRole("button", { name: "Закрыть список чатов" }).click();
+    await page.locator(".chat-row-main").first().click();
     await expect(page.locator(".chat-sidebar")).not.toHaveClass(/mobile-open/);
+    await page
+      .getByRole("button", { name: "Назад к списку чатов" })
+      .click();
+    await expect(page.locator(".chat-sidebar")).toHaveClass(/mobile-open/);
   });
 });

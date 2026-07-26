@@ -7,7 +7,13 @@ import {
   useRef,
 } from "react";
 import { ApiUser, MessageEvent, chatWaveApi } from "../api";
-import { Chat, Message, mapApiMessage, mergeMessages } from "../models";
+import {
+  Chat,
+  Message,
+  mapApiMessage,
+  mergeMessages,
+  messagePreview,
+} from "../models";
 import { playMessageNotification } from "../notification-sounds";
 import { decryptApiMessage } from "../e2ee/client";
 
@@ -22,6 +28,9 @@ type UseMessageSocketOptions = {
   setChats: Dispatch<SetStateAction<Chat[]>>;
   setMessages: Dispatch<SetStateAction<MessagesByChat>>;
   setTyping: Dispatch<SetStateAction<TypingByConversation>>;
+  onMissingConversation?: (
+    conversationId: number,
+  ) => Promise<{ chat: Chat; users: Record<number, ApiUser> } | null>;
 };
 
 export function useMessageSocket({
@@ -32,12 +41,14 @@ export function useMessageSocket({
   setChats,
   setMessages,
   setTyping,
+  onMissingConversation,
 }: UseMessageSocketOptions) {
   const socketRef = useRef<WebSocket | null>(null);
   const selectedChatRef = useRef(selectedChatId);
   const chatsRef = useRef(chats);
   const usersRef = useRef(users);
   const remoteTypingTimersRef = useRef<Record<string, number>>({});
+  const pendingReceiptSignalsRef = useRef<object[]>([]);
 
   useEffect(() => {
     selectedChatRef.current = selectedChatId;
@@ -67,6 +78,9 @@ export function useMessageSocket({
       socket.onopen = () => {
         retryDelay = 1_000;
         socketRef.current = socket;
+        pendingReceiptSignalsRef.current.splice(0).forEach((payload) => {
+          socket?.send(JSON.stringify(payload));
+        });
       };
       socket.onmessage = async (event) => {
         const payload = JSON.parse(event.data) as MessageEvent;
@@ -74,7 +88,20 @@ export function useMessageSocket({
           payload.type === "message.created" ||
           payload.type === "message.updated"
         ) {
-          const chat = findChat(payload.message.conversation_id);
+          let chat = findChat(payload.message.conversation_id);
+          if (!chat && onMissingConversation) {
+            const restored = await onMissingConversation(
+              payload.message.conversation_id,
+            );
+            if (restored) {
+              chat = restored.chat;
+              usersRef.current = restored.users;
+              chatsRef.current = [
+                ...chatsRef.current.filter((item) => item.id !== chat!.id),
+                chat,
+              ];
+            }
+          }
           if (!chat) return;
           const decryptedMessage = await decryptApiMessage(
             connectedUser.id,
@@ -95,11 +122,14 @@ export function useMessageSocket({
               item.id === chat.id
                 ? {
                     ...item,
-                    preview:
-                      mapped.text ||
-                      mapped.attachment?.name ||
-                      "Новое сообщение",
+                    preview: messagePreview(mapped),
                     time: mapped.time,
+                    lastActivityAt:
+                      payload.type === "message.created"
+                        ? payload.message.created_at
+                          ? new Date(payload.message.created_at).getTime()
+                          : Date.now()
+                        : item.lastActivityAt,
                     unread:
                       payload.type === "message.created" &&
                       payload.message.sender_id !== connectedUser.id &&
@@ -155,13 +185,16 @@ export function useMessageSocket({
                     item.status,
                   ]),
                 );
-          setMessages((current) => ({
-            ...current,
-            [chat.id]: (current[chat.id] ?? []).map((message) => ({
-              ...message,
-              status: statuses.get(message.id) ?? message.status,
-            })),
-          }));
+          setMessages((current) => {
+            let changed = false;
+            const messages = (current[chat.id] ?? []).map((message) => {
+              const status = statuses.get(message.id);
+              if (!status || status === message.status) return message;
+              changed = true;
+              return { ...message, status };
+            });
+            return changed ? { ...current, [chat.id]: messages } : current;
+          });
           return;
         }
 
@@ -209,11 +242,42 @@ export function useMessageSocket({
       );
       remoteTypingTimersRef.current = {};
     };
-  }, [connectedUser, setChats, setMessages, setTyping]);
+  }, [
+    connectedUser,
+    onMissingConversation,
+    setChats,
+    setMessages,
+    setTyping,
+  ]);
 
   return (payload: object) => {
     if (socketRef.current?.readyState === WebSocket.OPEN) {
       socketRef.current.send(JSON.stringify(payload));
+      return;
+    }
+    const type = (payload as { type?: unknown }).type;
+    if (
+      type === "message.read" ||
+      type === "message.delivered" ||
+      type === "message.read_batch" ||
+      type === "message.delivered_batch"
+    ) {
+      const signalKey =
+        "message_id" in payload
+          ? (payload as { message_id?: unknown }).message_id
+          : JSON.stringify(
+              (payload as { message_ids?: unknown }).message_ids ?? [],
+            );
+      const duplicate = pendingReceiptSignalsRef.current.some(
+        (item) =>
+          (item as { type?: unknown }).type === type &&
+          ("message_id" in item
+            ? (item as { message_id?: unknown }).message_id
+            : JSON.stringify(
+                (item as { message_ids?: unknown }).message_ids ?? [],
+              )) === signalKey,
+      );
+      if (!duplicate) pendingReceiptSignalsRef.current.push(payload);
     }
   };
 }

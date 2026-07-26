@@ -60,6 +60,23 @@ async def select_call_participants(call_id: int) -> tuple[Calls | None, list[int
         return call, list(members_result.scalars().all())
 
 
+async def select_active_calls_for_user(user_id: int) -> list[Calls]:
+    async with session() as cursor:
+        result = await cursor.execute(
+            select(Calls)
+            .join(
+                ConversationMembers,
+                ConversationMembers.conversation_id == Calls.conversation_id,
+            )
+            .where(
+                ConversationMembers.user_id == user_id,
+                Calls.status == CallsStatus.COMING,
+            )
+            .order_by(Calls.started_at.desc())
+        )
+        return list(result.scalars().all())
+
+
 async def transition_call_status(
     call_id: int,
     from_statuses: list[CallsStatus],

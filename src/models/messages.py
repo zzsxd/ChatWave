@@ -1,4 +1,4 @@
-from sqlalchemy import CheckConstraint, Index, ForeignKey, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, Index, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -47,6 +47,11 @@ class Messages(OrmBase):
         nullable=True,
     )
     encrypted_content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    voice_transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
+    transcript_language: Mapped[str | None] = mapped_column(
+        String(16),
+        nullable=True,
+    )
     created_at: Mapped[datetime_auto_set]
     updated_at: Mapped[datetime_auto_update]
 

@@ -14,6 +14,7 @@ from repository import (
     insert_members_to_conversation,
     create_private_conversation_atomic,
     create_group_conversation_atomic,
+    get_or_create_saved_conversation_atomic,
     select_conversation_by_id,
     update_conversation,
     update_conversation_creator,
@@ -90,6 +91,17 @@ async def create_group_conversation(user_id: int, group_data: CreateGroup) -> Ge
         pydantic_model=GetConversations
     )
     return new_conversation_obj
+
+
+async def get_or_create_saved_conversation(user_id: int) -> GetConversations:
+    conversation_id = await get_or_create_saved_conversation_atomic(user_id)
+    raw_conversation = await select_conversation_by_id(
+        conversation_id=conversation_id,
+    )
+    return await sqlalchemy_to_pydantic(
+        sqlalchemy_model=raw_conversation,
+        pydantic_model=GetConversations,
+    )
 
 
 async def edit_group_details(user_id: int, group_id: int, group_data: EditConversation):

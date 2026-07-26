@@ -16,8 +16,8 @@ test("renders the ChatWave messenger shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /<title>ChatWave — свободное общение<\/title>/i);
-  assert.match(html, /Команда ChatWave/);
-  assert.match(html, /Signal Focus/);
+  assert.match(html, /<title>ChatWave<\/title>/i);
+  assert.match(html, /class="app-canvas session-boot"/);
+  assert.match(html, /chatwave-logo\.svg/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
 });

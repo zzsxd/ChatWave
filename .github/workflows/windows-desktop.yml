@@ -1,0 +1,85 @@
+name: Windows Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - x64
+          - arm64
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Windows installer
+        run: npm run build:win:${{ matrix.arch }}
+
+      - name: Prepare architecture update channel
+        shell: pwsh
+        run: Move-Item "release/latest.yml" "release/latest-${{ matrix.arch }}.yml"
+
+      - name: Package unpacked application
+        shell: pwsh
+        run: |
+          $unpacked = if ("${{ matrix.arch }}" -eq "arm64") {
+            "release/win-arm64-unpacked"
+          } else {
+            "release/win-unpacked"
+          }
+          Compress-Archive `
+            -Path "$unpacked/*" `
+            -DestinationPath "release/ChatWave-Windows-${{ matrix.arch }}-portable.zip" `
+            -CompressionLevel Optimal
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatWave-Windows-${{ matrix.arch }}
+          path: |
+            desktop/release/ChatWave-Setup-*-${{ matrix.arch }}.exe
+            desktop/release/ChatWave-Setup-*-${{ matrix.arch }}.exe.blockmap
+            desktop/release/latest-${{ matrix.arch }}.yml
+            desktop/release/ChatWave-Windows-${{ matrix.arch }}-portable.zip
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ChatWave-Windows-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish Windows update assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true

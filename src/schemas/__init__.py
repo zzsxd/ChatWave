@@ -35,6 +35,7 @@ from .messages import (
     MessagesIds,
     ReactionAction,
     MessageReaction,
+    VoiceTranscription,
 )
 from .unread_messages import (
     GetUnreadMessages,
@@ -48,6 +49,7 @@ from .calls import (
     CallCandidate,
     CallHeartbeat,
     CallMediaState,
+    ActiveGroupCall,
     GroupCallAnswer,
     GroupCallCandidate,
     GroupCallMediaState,

@@ -16,6 +16,7 @@ export function useVoiceRecorder({
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const discardRef = useRef(false);
   const timerRef = useRef<number | null>(null);
   const onRecordedRef = useRef(onRecorded);
   const onErrorRef = useRef(onError);
@@ -43,6 +44,13 @@ export function useVoiceRecorder({
     if (recorderRef.current?.state !== "inactive") recorderRef.current?.stop();
   };
 
+  const cancel = () => {
+    discardRef.current = true;
+    if (recorderRef.current?.state !== "inactive") {
+      recorderRef.current?.stop();
+    }
+  };
+
   const start = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -56,6 +64,7 @@ export function useVoiceRecorder({
 
       streamRef.current = stream;
       chunksRef.current = [];
+      discardRef.current = false;
       recorder.ondataavailable = (event) => {
         if (event.data.size) chunksRef.current.push(event.data);
       };
@@ -76,7 +85,8 @@ export function useVoiceRecorder({
           window.clearInterval(timerRef.current);
           timerRef.current = null;
         }
-        if (file.size) onRecordedRef.current(file);
+        if (file.size && !discardRef.current) onRecordedRef.current(file);
+        discardRef.current = false;
       };
 
       recorderRef.current = recorder;
@@ -94,5 +104,5 @@ export function useVoiceRecorder({
     }
   };
 
-  return { recording, seconds, start, stop };
+  return { recording, seconds, start, stop, cancel };
 }

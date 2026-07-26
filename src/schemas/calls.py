@@ -68,6 +68,14 @@ class CallMediaState(CallSignalModel):
     screen_sharing: bool
     screen_audio: bool = False
     microphone_muted: bool = False
+    camera_enabled: bool = False
+
+
+class ActiveGroupCall(BaseModel):
+    call_id: int
+    conversation_id: int
+    media: Literal["audio", "video"]
+    participant_count: int
 
 
 class StartGroupCall(CallSignalModel):
@@ -127,6 +135,7 @@ class GroupCallMediaState(CallSignalModel):
     screen_sharing: bool
     screen_audio: bool = False
     microphone_muted: bool = False
+    camera_enabled: bool = False
 
 
 CallSignal = Annotated[

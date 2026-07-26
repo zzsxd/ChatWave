@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
@@ -12,6 +13,14 @@ from models import (
     E2EEOneTimeKeys,
     E2EEToDeviceEvents,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ToDeviceEvent:
+    id: int
+    sender_user_id: int
+    event_type: str
+    content: dict
 
 
 async def select_reachable_user_ids(
@@ -171,16 +180,30 @@ async def upload_e2ee_keys(
                     E2EEOneTimeKeys.device_id == device_id,
                     E2EEOneTimeKeys.algorithm == algorithm,
                     E2EEOneTimeKeys.is_fallback.is_(True),
+                    E2EEOneTimeKeys.key_id != key_id,
                 )
             )
             await cursor.execute(
-                insert(E2EEOneTimeKeys).values(
+                insert(E2EEOneTimeKeys)
+                .values(
                     user_id=user_id,
                     device_id=device_id,
                     key_id=key_id,
                     algorithm=algorithm,
                     key_data=key_data,
                     is_fallback=True,
+                )
+                .on_conflict_do_update(
+                    index_elements=[
+                        E2EEOneTimeKeys.user_id,
+                        E2EEOneTimeKeys.device_id,
+                        E2EEOneTimeKeys.key_id,
+                    ],
+                    set_={
+                        "algorithm": algorithm,
+                        "key_data": key_data,
+                        "is_fallback": True,
+                    },
                 )
             )
 
@@ -339,10 +362,15 @@ async def select_to_device_events(
     access_secret_hash: str,
     since: int,
     limit: int,
-) -> tuple[list[E2EEToDeviceEvents], int]:
+) -> tuple[list[ToDeviceEvent], int]:
     async with session() as cursor:
         result = await cursor.execute(
-            select(E2EEToDeviceEvents)
+            select(
+                E2EEToDeviceEvents.id,
+                E2EEToDeviceEvents.sender_user_id,
+                E2EEToDeviceEvents.event_type,
+                E2EEToDeviceEvents.content,
+            )
             .where(
                 E2EEToDeviceEvents.recipient_user_id == user_id,
                 E2EEToDeviceEvents.recipient_device_id == device_id,
@@ -351,8 +379,36 @@ async def select_to_device_events(
             .order_by(E2EEToDeviceEvents.id.asc())
             .limit(limit)
         )
-        events = list(result.scalars().all())
+        # Do not return ORM instances across the transaction boundary. The
+        # device last-seen update below commits the session and expires them,
+        # which otherwise makes /e2ee/sync fail with DetachedInstanceError
+        # before the recipient can receive its room key.
+        events = [
+            ToDeviceEvent(
+                id=row.id,
+                sender_user_id=row.sender_user_id,
+                event_type=row.event_type,
+                content=row.content,
+            )
+            for row in result.all()
+        ]
         next_batch = events[-1].id if events else since
+        if not events and since == 0:
+            # Reserve an empty initial-sync watermark. Returning 0 forever
+            # makes the client treat every poll as its first sync, which in
+            # turn causes Matrix SDK to query every device key repeatedly.
+            # Consuming one sequence value is safe: every future event receives
+            # a strictly larger id and therefore cannot be skipped.
+            watermark_result = await cursor.execute(
+                text(
+                    "SELECT nextval("
+                    "pg_get_serial_sequence("
+                    "'e2ee_to_device_events', 'id'"
+                    ")"
+                    ")"
+                )
+            )
+            next_batch = watermark_result.scalar_one()
         device_result = await cursor.execute(
             update(E2EEDevices)
             .where(

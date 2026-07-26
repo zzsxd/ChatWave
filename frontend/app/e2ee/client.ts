@@ -30,7 +30,37 @@ const locks = new Map<string, Promise<unknown>>();
 let syncCursor = "0";
 let pollingAccountId: number | null = null;
 let pollingTimer: number | null = null;
+let initialDeviceListAccountId: number | null = null;
+let syncInFlight:
+  | {
+      accountId: number;
+      promise: Promise<void>;
+    }
+  | null = null;
+let trackedAccountId: number | null = null;
+const trackedMemberIds = new Set<number>();
+const preparedRooms = new Set<string>();
+const preparedRoomMessageCounts = new Map<string, number>();
 const backupTimers = new Map<number, number>();
+
+function e2eeErrorMessage(reason: unknown) {
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "string" && reason) return reason;
+  return "неизвестная ошибка";
+}
+
+async function atE2eeStage<T>(
+  stage: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await action();
+  } catch (reason) {
+    throw new Error(`${stage}: ${e2eeErrorMessage(reason)}`, {
+      cause: reason,
+    });
+  }
+}
 
 async function locked<T>(key: string, action: () => Promise<T>): Promise<T> {
   const previous = locks.get(key) ?? Promise.resolve();
@@ -86,14 +116,20 @@ async function sendMatrixRequest(
 }
 
 async function flushOutgoing(accountId: number) {
-  const { machine } = await getCryptoMachine(accountId);
-  for (const request of await machine.outgoingRequests()) {
-    await sendMatrixRequest(accountId, request as MatrixRequest);
-  }
+  return locked(`outgoing:${accountId}`, async () => {
+    const { machine } = await getCryptoMachine(accountId);
+    for (const request of await machine.outgoingRequests()) {
+      await sendMatrixRequest(accountId, request as MatrixRequest);
+    }
+  });
 }
 
-export async function syncCrypto(accountId: number) {
-  return locked(`sync:${accountId}`, async () => {
+export function syncCrypto(accountId: number): Promise<void> {
+  if (syncInFlight?.accountId === accountId) {
+    return syncInFlight.promise;
+  }
+
+  const promise = locked(`machine:${accountId}`, async () => {
     const { machine, deviceId, deviceSecret } =
       await getCryptoMachine(accountId);
     await flushOutgoing(accountId);
@@ -102,7 +138,22 @@ export async function syncCrypto(accountId: number) {
       deviceSecret,
       syncCursor,
     );
-    const changed = response.device_lists.changed.map(
+    const hasNewEvents =
+      response.next_batch !== syncCursor ||
+      response.to_device.events.length > 0;
+    if (hasNewEvents) {
+      for (const roomKey of preparedRooms) {
+        if (roomKey.startsWith(`${accountId}:`)) {
+          preparedRooms.delete(roomKey);
+          preparedRoomMessageCounts.delete(roomKey);
+        }
+      }
+    }
+    const includeDeviceChanges =
+      initialDeviceListAccountId !== accountId || hasNewEvents;
+    const changed = (
+      includeDeviceChanges ? response.device_lists.changed : []
+    ).map(
       (userId) => new UserId(userId),
     );
     const left = response.device_lists.left.map(
@@ -114,6 +165,7 @@ export async function syncCrypto(accountId: number) {
       new Map(Object.entries(response.device_one_time_keys_count)),
       new Set(response.device_unused_fallback_key_types),
     );
+    initialDeviceListAccountId = accountId;
     syncCursor = response.next_batch;
     await chatWaveApi.e2eeAcknowledge(
       deviceId,
@@ -123,6 +175,12 @@ export async function syncCrypto(accountId: number) {
     await flushOutgoing(accountId);
     scheduleKeyBackup(accountId);
   });
+  syncInFlight = { accountId, promise };
+  const clearInFlight = () => {
+    if (syncInFlight?.promise === promise) syncInFlight = null;
+  };
+  void promise.then(clearInFlight, clearInFlight);
+  return promise;
 }
 
 export async function initializeCrypto(
@@ -133,19 +191,28 @@ export async function initializeCrypto(
     if (pollingTimer !== null) window.clearInterval(pollingTimer);
     pollingAccountId = accountId;
     syncCursor = "0";
+    initialDeviceListAccountId = null;
   }
-  const { machine } = await getCryptoMachine(accountId);
-  await machine.updateTrackedUsers(
-    [...new Set([accountId, ...memberIds])].map(
-      (userId) => new UserId(cryptoUserId(userId)),
-    ),
-  );
+  if (trackedAccountId !== accountId) {
+    trackedAccountId = accountId;
+    trackedMemberIds.clear();
+  }
+  const uniqueMemberIds = [...new Set([accountId, ...memberIds])];
+  await locked(`machine:${accountId}`, async () => {
+    const { machine } = await getCryptoMachine(accountId);
+    await machine.updateTrackedUsers(
+      uniqueMemberIds.map(
+        (userId) => new UserId(cryptoUserId(userId)),
+      ),
+    );
+  });
+  uniqueMemberIds.forEach((userId) => trackedMemberIds.add(userId));
   await syncCrypto(accountId);
 
   if (pollingTimer === null) {
     pollingTimer = window.setInterval(() => {
       void syncCrypto(accountId).catch(() => undefined);
-    }, 2_000);
+    }, 10_000);
   }
 }
 
@@ -154,6 +221,12 @@ export function stopCryptoPolling() {
   pollingTimer = null;
   pollingAccountId = null;
   syncCursor = "0";
+  initialDeviceListAccountId = null;
+  syncInFlight = null;
+  trackedAccountId = null;
+  trackedMemberIds.clear();
+  preparedRooms.clear();
+  preparedRoomMessageCounts.clear();
   backupTimers.forEach((timer) => window.clearTimeout(timer));
   backupTimers.clear();
 }
@@ -224,29 +297,49 @@ export function scheduleKeyBackup(accountId: number) {
   backupTimers.set(accountId, timer);
 }
 
-export async function encryptTextMessage(
+async function prepareRoomEncryptionUnlocked(
   accountId: number,
   conversationId: number,
   memberIds: number[],
-  content: string,
 ) {
-  return locked(`room:${accountId}:${conversationId}`, async () => {
-    const { machine } = await getCryptoMachine(accountId);
-    const uniqueMemberIds = [...new Set([accountId, ...memberIds])];
-    await machine.updateTrackedUsers(
-      uniqueMemberIds.map(
-        (userId) => new UserId(cryptoUserId(userId)),
+  const { machine } = await getCryptoMachine(accountId);
+  const uniqueMemberIds = [...new Set([accountId, ...memberIds])];
+  const roomPreparationKey = `${accountId}:${conversationId}:${uniqueMemberIds
+    .slice()
+    .sort((left, right) => left - right)
+    .join(",")}`;
+  if (
+    trackedAccountId !== accountId ||
+    uniqueMemberIds.some((userId) => !trackedMemberIds.has(userId))
+  ) {
+    trackedAccountId = accountId;
+    await atE2eeStage("обновление устройств", () =>
+      machine.updateTrackedUsers(
+        uniqueMemberIds.map(
+          (userId) => new UserId(cryptoUserId(userId)),
+        ),
       ),
     );
-    await syncCrypto(accountId);
+    uniqueMemberIds.forEach((userId) => trackedMemberIds.add(userId));
+    await atE2eeStage("синхронизация устройств", () =>
+      flushOutgoing(accountId),
+    );
+  }
 
-    const missingSessions = await machine.getMissingSessions(
-      uniqueMemberIds.map(
-        (userId) => new UserId(cryptoUserId(userId)),
-      ),
+  if (!preparedRooms.has(roomPreparationKey)) {
+    const missingSessions = await atE2eeStage(
+      "проверка E2EE-сессий",
+      () =>
+        machine.getMissingSessions(
+          uniqueMemberIds.map(
+            (userId) => new UserId(cryptoUserId(userId)),
+          ),
+        ),
     );
     if (missingSessions) {
-      await sendMatrixRequest(accountId, missingSessions as MatrixRequest);
+      await atE2eeStage("создание E2EE-сессий", () =>
+        sendMatrixRequest(accountId, missingSessions as MatrixRequest),
+      );
     }
 
     const settings = new EncryptionSettings();
@@ -254,22 +347,67 @@ export async function encryptTextMessage(
     settings.sharingStrategy = CollectStrategy.allDevices();
     settings.rotationPeriodMessages = BigInt(100);
     settings.rotationPeriod = BigInt(604_800_000_000);
-    const keyRequests = await machine.shareRoomKey(
-      cryptoRoomId(conversationId),
-      uniqueMemberIds.map(
-        (userId) => new UserId(cryptoUserId(userId)),
+    const roomId = cryptoRoomId(conversationId);
+    // The persisted Matrix store may remember that an older outbound Megolm
+    // session was shared even when a recipient has recreated its local crypto
+    // store. Rotate once per prepared room so every currently registered
+    // device receives a fresh room key before the next message is encrypted.
+    await atE2eeStage("ротация ключа комнаты", () =>
+      machine.invalidateGroupSession(roomId),
+    );
+    const keyRequests = await atE2eeStage(
+      "подготовка ключа комнаты",
+      () => machine.shareRoomKey(
+        roomId,
+        // Matrix WASM invalidates every UserId passed to
+        // getMissingSessions(), so shareRoomKey() must receive fresh objects.
+        uniqueMemberIds.map(
+          (userId) => new UserId(cryptoUserId(userId)),
+        ),
+        settings,
       ),
-      settings,
     );
     for (const request of keyRequests) {
-      await sendMatrixRequest(accountId, request as MatrixRequest);
+      await atE2eeStage("доставка ключа комнаты", () =>
+        sendMatrixRequest(accountId, request as MatrixRequest),
+      );
     }
+    preparedRooms.add(roomPreparationKey);
+    preparedRoomMessageCounts.set(roomPreparationKey, 0);
+  }
+  return { machine, roomPreparationKey };
+}
 
-    const encrypted = await machine.encryptRoomEvent(
-      cryptoRoomId(conversationId),
-      "m.room.message",
-      JSON.stringify({ msgtype: "m.text", body: content }),
+export async function encryptTextMessage(
+  accountId: number,
+  conversationId: number,
+  memberIds: number[],
+  content: string,
+) {
+  return locked(`machine:${accountId}`, async () => {
+    const { machine, roomPreparationKey } =
+      await prepareRoomEncryptionUnlocked(
+        accountId,
+        conversationId,
+        memberIds,
+      );
+
+    const encrypted = await atE2eeStage(
+      "шифрование сообщения",
+      () => machine.encryptRoomEvent(
+        cryptoRoomId(conversationId),
+        "m.room.message",
+        JSON.stringify({ msgtype: "m.text", body: content }),
+      ),
     );
+    const roomMessageCount =
+      (preparedRoomMessageCounts.get(roomPreparationKey) ?? 0) + 1;
+    preparedRoomMessageCounts.set(roomPreparationKey, roomMessageCount);
+    // Re-share before the configured 100-message Megolm rotation.
+    if (roomMessageCount >= 90) {
+      preparedRooms.delete(roomPreparationKey);
+      preparedRoomMessageCounts.delete(roomPreparationKey);
+    }
     scheduleKeyBackup(accountId);
     return JSON.parse(encrypted) as Record<string, unknown>;
   });
@@ -283,20 +421,22 @@ async function decryptWithoutSync(
     return message;
   }
   try {
-    const { machine } = await getCryptoMachine(accountId);
-    const decrypted = await machine.decryptRoomEvent(
-      JSON.stringify({
-        event_id: `$chatwave-${message.id}:chatwave.local`,
-        type: "m.room.encrypted",
-        sender: cryptoUserId(message.sender_id),
-        origin_server_ts: message.created_at
-          ? new Date(message.created_at).getTime()
-          : Date.now(),
-        content: message.encrypted_content,
-      }),
-      cryptoRoomId(message.conversation_id),
-      new DecryptionSettings(TrustRequirement.Untrusted),
-    );
+    const decrypted = await locked(`machine:${accountId}`, async () => {
+      const { machine } = await getCryptoMachine(accountId);
+      return machine.decryptRoomEvent(
+        JSON.stringify({
+          event_id: `$chatwave-${message.id}:chatwave.local`,
+          type: "m.room.encrypted",
+          sender: cryptoUserId(message.sender_id),
+          origin_server_ts: message.created_at
+            ? new Date(message.created_at).getTime()
+            : Date.now(),
+          content: message.encrypted_content,
+        }),
+        cryptoRoomId(message.conversation_id),
+        new DecryptionSettings(TrustRequirement.Untrusted),
+      );
+    });
     if (decrypted.sender.toString() !== cryptoUserId(message.sender_id)) {
       throw new Error("E2EE sender mismatch");
     }

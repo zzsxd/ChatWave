@@ -1,7 +1,14 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
 import { AppProviders } from "./providers";
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  interactiveWidget: "resizes-content",
+};
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -15,23 +22,22 @@ export async function generateMetadata(): Promise<Metadata> {
   const origin = `${protocol}://${host}`;
 
   return {
-    title: "ChatWave — свободное общение",
-    description:
-      "Быстрый и выразительный open-source мессенджер для команд и друзей.",
+    title: "ChatWave",
+    description: "ChatWave",
     icons: {
       icon: "/chatwave-logo.svg",
       shortcut: "/chatwave-logo.svg",
     },
     openGraph: {
       title: "ChatWave",
-      description: "Свободное общение. Сильные связи.",
+      description: "ChatWave",
       type: "website",
       images: [{ url: `${origin}/og.png`, width: 1200, height: 630 }],
     },
     twitter: {
       card: "summary_large_image",
       title: "ChatWave",
-      description: "Свободное общение. Сильные связи.",
+      description: "ChatWave",
       images: [`${origin}/og.png`],
     },
   };

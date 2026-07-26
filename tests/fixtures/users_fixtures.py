@@ -24,9 +24,24 @@ async def create_random_users():
 @pytest.fixture(scope='function')
 async def create_users():
     users = list()
-    for user_nickname in ["Jason", "Ryan", "Mike", "Jake", "Ryan Gosling"]:
-        user: Users = await UserFactory(nickname=user_nickname)
-        users.append({"id": user.id, "nickname": user.nickname})
+    for user_nickname, username in [
+        ("Jason", "jason"),
+        ("Ryan", "ryan"),
+        ("Mike", "mike"),
+        ("Jake", "jake"),
+        ("Ryan Gosling", "ryan.gosling"),
+    ]:
+        user: Users = await UserFactory(
+            nickname=user_nickname,
+            username=username,
+        )
+        users.append(
+            {
+                "id": user.id,
+                "nickname": user.nickname,
+                "username": user.username,
+            }
+        )
 
     yield users
 

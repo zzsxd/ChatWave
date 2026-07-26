@@ -16,6 +16,7 @@ from validators import verify_current_user_is_existed
 from services import (
     create_private_conversation,
     create_group_conversation,
+    get_or_create_saved_conversation,
     edit_group_details,
     upload_group_avatar,
     fetch_group_avatar_metadata,
@@ -179,6 +180,13 @@ async def create_group(
 ):
     new_conversation = await create_group_conversation(user_id=current_user_id, group_data=request)
     return new_conversation
+
+
+@conversations_router.post("/saved", status_code=status.HTTP_200_OK, response_model=GetConversations)
+async def create_or_get_saved(
+        current_user_id: Annotated[int, Depends(verify_token)],
+):
+    return await get_or_create_saved_conversation(user_id=current_user_id)
 
 
 @conversations_router.post("/{group_id}/members", status_code=status.HTTP_201_CREATED)

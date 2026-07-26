@@ -106,6 +106,12 @@ class MessageReaction(BaseModel):
     emoji: str
 
 
+class VoiceTranscription(BaseModel):
+    text: str
+    language: str | None = None
+    cached: bool = False
+
+
 class ReactionAction(BaseModel):
     emoji: Literal["👍", "❤️", "😂", "😮", "😢", "🔥"]
 

@@ -130,6 +130,9 @@ class GenericSettings(BaseSettings):
     MAX_ARCHIVE_SIZE_MB: int = 200
     MAX_BULK_DOWNLOAD_SIZE_MB: int = 512
     MAX_MEDIA_STORAGE_PER_USER_MB: int = 2048
+    TRANSCRIPTION_MODEL: str = "Systran/faster-whisper-base"
+    TRANSCRIPTION_COMPUTE_TYPE: str = "int8"
+    MAX_TRANSCRIPTION_AUDIO_SIZE_MB: int = Field(default=20, ge=1, le=64)
     CHUNK_SIZE: int = 16
     MAX_ITEMS_PER_REQUEST: int = 100
     RATE_LIMIT_REQUESTS_PER_MINUTE: int = 300

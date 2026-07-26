@@ -282,6 +282,24 @@ async def update_message(message_id: int, content: str) -> None:
         await cursor.commit()
 
 
+async def update_voice_transcript(
+    message_id: int,
+    transcript: str,
+    language: str | None,
+) -> None:
+    async with session() as cursor:
+        await cursor.execute(
+            update(Messages)
+            .filter_by(id=message_id)
+            .values(
+                voice_transcript=transcript,
+                transcript_language=language,
+                updated_at=text("updated_at"),
+            )
+        )
+        await cursor.commit()
+
+
 async def select_message(message_id: int) -> Messages:
     async with session() as cursor:
         query = (

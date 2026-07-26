@@ -15,6 +15,8 @@ from repository import (
     select_conversation_members,
     select_message,
     select_message_receipts_statuses,
+    select_messages,
+    select_receipts_for_messages,
 )
 from schemas import GetMessage
 from utilities import MessagesStatus
@@ -37,6 +39,14 @@ class ReceiptSignal(BaseModel):
 
     type: Literal["message.delivered", "message.read"]
     message_id: int = Field(ge=1, le=2_147_483_647)
+
+
+class ReceiptBatchSignal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["message.delivered_batch", "message.read_batch"]
+    conversation_id: int = Field(ge=1, le=2_147_483_647)
+    message_ids: list[int] = Field(min_length=1, max_length=500)
 
 
 async def _publish_to_members(
@@ -180,6 +190,54 @@ async def _handle_receipt(
     )
 
 
+async def _handle_receipt_batch(
+    current_user_id: int,
+    signal: ReceiptBatchSignal,
+) -> None:
+    await validate_user_in_conversation(
+        user_id=current_user_id,
+        conversation_id=signal.conversation_id,
+    )
+    unique_ids = list(dict.fromkeys(signal.message_ids))
+    messages = list(await select_messages(unique_ids))
+    valid_ids = [
+        message.id
+        for message in messages
+        if (
+            message.conversation_id == signal.conversation_id
+            and message.sender_id != current_user_id
+        )
+    ]
+    if not valid_ids:
+        return
+
+    if signal.type == "message.read_batch":
+        await mark_message_receipts_read(current_user_id, valid_ids)
+    else:
+        await mark_message_receipts_delivered(current_user_id, valid_ids)
+
+    receipt_rows = await select_receipts_for_messages(valid_ids)
+    statuses_by_message: dict[int, list[MessagesStatus]] = {}
+    for message_id, _recipient_id, receipt_status in receipt_rows:
+        statuses_by_message.setdefault(message_id, []).append(receipt_status)
+    await _publish_to_members(
+        signal.conversation_id,
+        {
+            "type": "message.statuses",
+            "conversation_id": signal.conversation_id,
+            "statuses": [
+                {
+                    "message_id": message_id,
+                    "status": _effective_status(
+                        statuses_by_message.get(message_id, [])
+                    ).value,
+                }
+                for message_id in valid_ids
+            ],
+        },
+    )
+
+
 async def _handle_typing(
     current_user_id: int,
     signal: TypingSignal,
@@ -228,10 +286,21 @@ async def _handle_client_signal(
                 {"type": "message.error", "code": "rate_limited"}
             )
             return
-        if isinstance(payload, dict) and str(payload.get("type", "")).startswith(
-            "typing."
-        ):
-            await _handle_typing(current_user_id, TypingSignal.model_validate(payload))
+        signal_type = (
+            str(payload.get("type", ""))
+            if isinstance(payload, dict)
+            else ""
+        )
+        if signal_type.startswith("typing."):
+            await _handle_typing(
+                current_user_id,
+                TypingSignal.model_validate(payload),
+            )
+        elif signal_type.endswith("_batch"):
+            await _handle_receipt_batch(
+                current_user_id,
+                ReceiptBatchSignal.model_validate(payload),
+            )
         else:
             await _handle_receipt(
                 current_user_id,

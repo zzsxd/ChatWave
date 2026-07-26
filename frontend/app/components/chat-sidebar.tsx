@@ -2,69 +2,85 @@
 
 import {
   BellOff,
-  ChevronDown,
+  Bookmark,
+  PhoneCall,
+  Pin,
   Plus,
   Search,
-  UserRound,
 } from "lucide-react";
+import { type PointerEvent as ReactPointerEvent } from "react";
+import { ApiActiveGroupCall, ApiUser, chatWaveApi } from "../api";
 import { Chat } from "../models";
 import {
   ChatFilter,
-  NavigationMode,
 } from "../hooks/use-ui-state";
 
 type ChatSidebarProps = {
   chats: Chat[];
   selectedChatId: string;
   mobileOpen: boolean;
-  navMode: NavigationMode;
   filter: ChatFilter;
   query: string;
   unreadCount: number;
+  currentUser: ApiUser;
+  compact: boolean;
+  activeGroupCalls: ApiActiveGroupCall[];
   onSelectChat: (chat: Chat) => void;
-  onNavigationChange: (mode: NavigationMode) => void;
   onFilterChange: (filter: ChatFilter) => void;
   onQueryChange: (query: string) => void;
   onNewConversation: () => void;
   onOpenProfile: () => void;
+  onTogglePin: (chat: Chat) => void;
+  onJoinGroupCall: (call: ApiActiveGroupCall) => void;
+  onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizeMove: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onResizeEnd: (event: ReactPointerEvent<HTMLDivElement>) => void;
 };
 
 export function ChatSidebar({
   chats,
   selectedChatId,
   mobileOpen,
-  navMode,
   filter,
   query,
   unreadCount,
+  currentUser,
+  compact,
+  activeGroupCalls,
   onSelectChat,
-  onNavigationChange,
   onFilterChange,
   onQueryChange,
   onNewConversation,
   onOpenProfile,
+  onTogglePin,
+  onJoinGroupCall,
+  onResizeStart,
+  onResizeMove,
+  onResizeEnd,
 }: ChatSidebarProps) {
   return (
-    <aside className={`chat-sidebar ${mobileOpen ? "mobile-open" : ""}`}>
+    <aside
+      className={`chat-sidebar ${mobileOpen ? "mobile-open" : ""} ${
+        compact ? "compact" : ""
+      }`}
+    >
       <header className="sidebar-header">
-        <div>
-          <button
-            className="workspace-title"
-            onClick={() =>
-              onNavigationChange(navMode === "groups" ? "messages" : "groups")
-            }
-          >
-            ChatWave <ChevronDown size={16} />
-          </button>
-        </div>
+        <img className="sidebar-brand-logo" src="/chatwave-logo.svg" alt="ChatWave" />
         <div className="sidebar-header-actions">
           <button
-            className="icon-button mobile-profile-button"
+            className="sidebar-profile-avatar"
             aria-label="Настройки профиля"
             title="Настройки профиля"
             onClick={onOpenProfile}
           >
-            <UserRound size={18} />
+            {currentUser.avatar_name ? (
+              <img
+                src={chatWaveApi.avatarUrl(currentUser.avatar_name) ?? ""}
+                alt=""
+              />
+            ) : (
+              currentUser.nickname.slice(0, 2).toUpperCase()
+            )}
           </button>
           <button
             className="icon-button new-chat"
@@ -85,7 +101,6 @@ export function ChatSidebar({
           placeholder="Поиск"
           aria-label="Поиск чатов"
         />
-        <kbd>⌘ K</kbd>
       </div>
 
       <div className="chat-filters">
@@ -104,29 +119,69 @@ export function ChatSidebar({
       </div>
 
       <div className="chat-list">
-        {chats.map((chat) => (
-          <button
+        {chats.map((chat) => {
+          const activeCall = activeGroupCalls.find(
+            (call) => call.conversation_id === chat.conversationId,
+          );
+          return (
+          <div
             key={chat.id}
-            className={`chat-row ${selectedChatId === chat.id ? "active" : ""}`}
-            onClick={() => onSelectChat(chat)}
+            className={`chat-row ${selectedChatId === chat.id ? "active" : ""} ${
+              chat.pinned ? "pinned" : ""
+            }`}
           >
-            <span className={`avatar avatar-${chat.accent}`}>
-              {chat.avatarUrl ? <img src={chat.avatarUrl} alt="" /> : chat.initials}
-              {chat.online && <i />}
-            </span>
-            <span className="chat-copy">
-              <span className="chat-title-row">
-                <strong>{chat.title}</strong>
-                <time>{chat.time}</time>
+            <button
+              className="chat-row-main"
+              onClick={() => onSelectChat(chat)}
+              aria-label={`Открыть чат ${chat.title}`}
+            >
+              <span className={`avatar avatar-${chat.accent}`}>
+                {chat.type === "saved" ? (
+                  <Bookmark size={20} fill="currentColor" />
+                ) : chat.avatarUrl ? (
+                  <img src={chat.avatarUrl} alt="" />
+                ) : (
+                  chat.initials
+                )}
+                {chat.online && <i />}
               </span>
-              <span className="chat-preview-row">
-                <span>{chat.preview}</span>
-                {chat.muted && <BellOff size={13} />}
-                {chat.unread && <b>{chat.unread}</b>}
+              <span className="chat-copy">
+                <span className="chat-title-row">
+                  <strong>{chat.title}</strong>
+                  <time>{chat.time}</time>
+                </span>
+                <span className="chat-preview-row">
+                  <span>{chat.preview}</span>
+                  {chat.muted && <BellOff size={13} />}
+                  {chat.unread && <b>{chat.unread}</b>}
+                </span>
               </span>
-            </span>
-          </button>
-        ))}
+            </button>
+            {activeCall && (
+              <button
+                className="chat-call-live"
+                onClick={() => {
+                  onSelectChat(chat);
+                  onJoinGroupCall(activeCall);
+                }}
+                aria-label={`Подключиться к звонку в ${chat.title}`}
+                title="Идёт групповой звонок — подключиться"
+              >
+                <PhoneCall size={13} />
+                <span>{activeCall.participant_count}</span>
+              </button>
+            )}
+            <button
+              className="chat-pin-button"
+              onClick={() => onTogglePin(chat)}
+              aria-label={chat.pinned ? "Открепить чат" : "Закрепить чат"}
+              title={chat.pinned ? "Открепить" : "Закрепить"}
+            >
+              <Pin size={13} fill={chat.pinned ? "currentColor" : "none"} />
+            </button>
+          </div>
+          );
+        })}
         {!chats.length && (
           <div className="empty-search">
             <Search size={24} />
@@ -145,6 +200,16 @@ export function ChatSidebar({
         )}
       </div>
 
+      <div
+        className="sidebar-resize-handle"
+        role="separator"
+        aria-label="Изменить ширину списка чатов"
+        aria-orientation="vertical"
+        onPointerDown={onResizeStart}
+        onPointerMove={onResizeMove}
+        onPointerUp={onResizeEnd}
+        onPointerCancel={onResizeEnd}
+      />
     </aside>
   );
 }

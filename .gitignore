@@ -10,3 +10,7 @@ __pycache__/
 .coverage
 .pytest_cache/
 .ruff_cache/
+desktop/node_modules/
+desktop/release/
+mobile/node_modules/
+mobile/release/

@@ -10,7 +10,7 @@ export function useUiState() {
   const [navMode, setNavMode] = useState<NavigationMode>("messages");
   const [filter, setFilter] = useState<ChatFilter>("all");
   const [query, setQuery] = useState("");
-  const [detailsOpen, setDetailsOpen] = useState(true);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [mobileChatsOpen, setMobileChatsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
 
