@@ -1,155 +1,293 @@
-<!-- Language switch -->
-[🇷🇺 Русский](README/readme.ru.md) | [🇬🇧 English](README.md)
-
 <p align="center">
-  <img src="assets/logo-dark.svg" alt="ChatWave logo" width="200"/>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
+    <img src="assets/logo-dark.svg" alt="ChatWave" width="180">
+  </picture>
 </p>
 
+<h1 align="center">ChatWave</h1>
+
 <p align="center">
-  🔗 <a href="http://144.21.36.114/authorization/signin.html" target="_blank"><strong>Try the Live Demo</strong></a>  
-  <br/>
-  <code>Login:</code> <strong>demo</strong> &nbsp;•&nbsp; <code>Password:</code> <strong>Demodemo123</strong>
+  Современный open-source мессенджер для самостоятельного размещения.
 </p>
 
+ChatWave объединяет личные и групповые чаты, обмен файлами, голосовые и
+видеозвонки в одном адаптивном интерфейсе. Проект включает сервер, веб-клиент,
+приложения для Windows и macOS, а также мобильные оболочки для Android и iOS.
 
-# 💬 ChatWave
+> Этот репозиторий развивает идеи
+> [оригинального ChatWave от lifufkd](https://github.com/lifufkd/ChatWave).
+> Спасибо автору исходного проекта за основу.
 
-**ChatWave** is a modern, simple, and secure REST API for a self-hosted messenger — open source and licensed under **GPLv3**.  
-This repository contains only the **backend**, built with **Python 3.11** and **FastAPI**.
+## Возможности
 
-## ✨ Features
+### Сообщения
 
-- 🏠 Self-hosted backend
-- 🔐 Secure auth (JWT Bearer HS256), TLSv3, password hashing
-- 👤 Account & profile management
-- 💬 Personal & group chats
-- 🎙️ Media messages (voice, images, files)
-- ⚡ Real-time message updates via WebSocket
-- 📞 WebRTC audio & video calls (1-on-1)
-- 🧹 Permanent deletion of messages
+- личные и групповые чаты;
+- сообщения в реальном времени через WebSocket;
+- изображения, видео, файлы и голосовые сообщения;
+- просмотр медиа и воспроизведение аудио внутри приложения;
+- расшифровка голосовых сообщений в текст;
+- ответы, реакции, закрепление, поиск и массовое удаление сообщений;
+- индикаторы доставки, прочтения, набора текста и статуса пользователя;
+- чат «Избранное» для сообщений самому себе;
+- закрепление и сортировка диалогов;
+- настраиваемый фон чата.
 
-## 🛣️ Roadmap
+### Звонки
 
-- 🌐 Web frontend (already available, but still in active development: [chatwave-web](https://github.com/lifufkd/chatwave-web))
-- 🎥 Video messages (real-time)
-- 📞 Group audio & video calls
+- личные и групповые аудио- и видеозвонки на WebRTC;
+- включение камеры во время аудиозвонка;
+- демонстрация экрана и передача системного звука на поддерживаемых платформах;
+- выбор камеры, микрофона и устройства вывода;
+- настройка громкости участников и демонстрации;
+- полноэкранный и компактный режимы;
+- история звонков непосредственно в чате;
+- STUN/TURN для работы за NAT и корпоративными сетями.
 
-## 🚀 Getting Started
+### Аккаунт и безопасность
 
-### 🧑‍💻 1. Run from source
+- регистрация, авторизация и долгоживущая refresh-сессия;
+- изменение имени, username, пароля и аватара;
+- история аватаров;
+- локальное хранение ключей E2EE и recovery key;
+- шифрование сообщений на стороне клиента с использованием
+  Matrix Crypto WASM;
+- JWT-аутентификация, ограничение частоты запросов и проверка загрузок;
+- изоляция данных PostgreSQL и Redis в серверной сети.
+
+### Клиенты
+
+- адаптивный веб-интерфейс;
+- Electron-приложение для Windows 10/11, Windows ARM64 и macOS;
+- сворачивание desktop-приложения в трей и масштабирование интерфейса;
+- приложения на Capacitor для Android и iOS;
+- автоматические сборки клиентов через GitHub Actions.
+
+## Технологии
+
+| Часть | Стек |
+|---|---|
+| Backend | Python 3.11, FastAPI, SQLAlchemy, Alembic |
+| База данных | PostgreSQL 16 |
+| События и кэш | Redis |
+| Frontend | React 19, TypeScript, Next.js/Vinext, TanStack Query |
+| E2EE | Matrix SDK Crypto WASM |
+| Звонки | WebRTC, WebSocket, coturn |
+| Расшифровка голоса | faster-whisper |
+| Desktop | Electron, electron-builder |
+| Mobile | Capacitor, WKWebView, Android WebView |
+| Инфраструктура | Docker Compose, Nginx, GitHub Actions |
+
+## Структура репозитория
+
+```text
+ChatWave/
+├── src/                    # FastAPI API, модели, сервисы и миграции
+├── frontend/               # Веб-клиент
+├── desktop/                # Electron-клиент Windows/macOS
+├── mobile/
+│   ├── android/            # Android-проект
+│   └── ios/                # Xcode-проект
+├── tests/                  # API- и unit-тесты
+├── nginx/                  # Конфигурация reverse proxy
+├── docs/                   # Техническая документация
+└── docker-compose.yml      # Локальная инфраструктура
+```
+
+## Быстрый запуск через Docker
+
+### Требования
+
+- Docker Engine с Docker Compose;
+- свободные порты `8000` и `8091`;
+- минимум 2 ГБ оперативной памяти.
+
+Скопируйте пример конфигурации:
 
 ```bash
-git clone https://github.com/lifufkd/ChatWave
+cp .env.example .env
+```
+
+Замените все значения `CHANGE_ME`. Для локального запуска также задайте:
+
+```dotenv
+API_CORS_ALLOW_ORIGINS=["http://localhost:8091"]
+FRONTEND_API_URL=http://localhost:8000
+```
+
+Секреты можно сгенерировать командой:
+
+```bash
+openssl rand -hex 48
+```
+
+Запустите базу данных, Redis, API и локальный frontend:
+
+```bash
+docker compose up --build -d postgres redis chatwave frontend
+```
+
+После запуска веб-интерфейс доступен на `http://localhost:8091`, API — на
+`http://localhost:8000`.
+
+Проверить состояние контейнеров:
+
+```bash
+docker compose ps
+docker compose logs -f chatwave frontend
+```
+
+Остановить проект:
+
+```bash
+docker compose down
+```
+
+Для рабочего окружения обязательно используйте HTTPS, собственные стойкие
+секреты и настроенный TURN-сервер. Не публикуйте PostgreSQL и Redis напрямую в
+интернет.
+
+## Запуск для разработки
+
+### Backend
+
+Для API необходимы запущенные PostgreSQL и Redis.
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-cd ./src
-nano .env (Fill in the env file according to the section "ENV configuration")
-uvicorn main:app --host 0.0.0.0 --port 8000
+cp .env.example .env
+alembic upgrade head
+MODE=development uvicorn main:app --app-dir src --reload --host 127.0.0.1 --port 8000
 ```
 
-### 🐳 2. Run with Docker
+### Frontend
 
-### 1. Standalone 
-
-#### 1. Download the docker image:
-
-```
-docker pull ghcr.io/lifufkd/chatwave:latest
-```
-
-#### 2. Run with the necessary environment variables:
+Требуется Node.js 22 или новее.
 
 ```bash
-docker run \
---name chatwave \
--d \
--p 8080:8000 \
--v <PATH_TO_MEDIA_FOLDER>:/app/data \
---env-file <PATH-TO-ENV> \
-ghcr.io/lifufkd/chatwave:latest
+cd frontend
+npm install
+NEXT_PUBLIC_CHATWAVE_API_URL=http://localhost:8000 npm run dev
 ```
 
-### 2. All in one
+### Тесты
 
-#### 1. HTTP (no ssl)
+Frontend:
+
 ```bash
-git clone https://github.com/lifufkd/ChatWave
-cd ChatWave
-docker-compose up -d
+cd frontend
+npm test
+npm run test:mobile-layout
 ```
 
-For safety, this mode binds the API to `127.0.0.1` by default. Use it behind
-a local reverse proxy. Set `API_BIND_ADDRESS=0.0.0.0` only on a trusted network;
-credentials and messages must not be sent over public plain HTTP.
+Backend-тесты используют отдельную тестовую схему PostgreSQL:
 
-
-#### 2. HTTPS (ssl)
 ```bash
-git clone https://github.com/lifufkd/ChatWave
-cd ChatWave
-docker-compose -f docker-compose.nginx.yml up -d
+MODE=testing .venv/bin/pytest -q
 ```
 
-## ⚙️ ENV Configuration
+## Desktop
 
-```
-# Required
-MEDIA_FOLDER=<PATH> # Must be same in run command (-v chatwave_appdata:/app/data)
+### Локальный запуск
 
-# Required for "Standalone" installation method
-DB_HOST=<DOMAIN-OR-IP>
-DB_USER=<USER>
-DB_PASSWORD=<PASSWORD>
-REDIS_HOST=<DOMAIN-OR-IP>
-
-# Required for HTTPS (ssl)
-SSL_CERTS_FOLDER=<PATH_TO_FOLDER_WITH_CERTS>
-SSL_CERT_PATH=/cert/cert.pem
-SSL_CERT_KEY=/cert/cert.key
- 
-# Required in production
-REDIS_PASSWORD=<PASSWORD>
-JWT_SECRET_KEY=<AT-LEAST-64-RANDOM-CHARACTERS>
-API_CORS_ALLOW_ORIGINS=["https://chat.example.com"]
-
-# Optional
-DB_DATABASE=<DATABASE-NAME>
-DB_PORT=<PORT>
-DB_SCHEMA=chatwave
-REDIS_PORT=<PORT>
-REDIS_DATABASE=0
-REDIS_USER=<USER>
-JWT_ACCESS_TOKEN_EXPIRES=900 # Access token lifetime in seconds
-JWT_ALGORITHM=HS256
-CHUNK_SIZE=16 # Decimal value in MB for streaming video
-MAX_UPLOAD_IMAGE_SIZE=20 # Decimal value in MB
-MAX_UPLOAD_VIDEO_SIZE=256 # Decimal value in MB
-MAX_UPLOAD_AUDIO_SIZE=64 # Decimal value in MB
-MAX_UPLOAD_FILE_SIZE=128 # Decimal value in MB
-MAX_REQUEST_BODY_SIZE_MB=260 # Includes multipart overhead
-MAX_ITEMS_PER_REQUEST=100 # Decimal value
-RATE_LIMIT_REQUESTS_PER_MINUTE=300
-RATE_LIMIT_LOGIN_PER_MINUTE=10
-RATE_LIMIT_SIGNUP_PER_HOUR=5
-MAX_WEBSOCKETS_PER_USER=5
+```bash
+cd desktop
+npm install
+npm start
 ```
 
-Existing deployments should run `alembic upgrade head` before starting the
-updated application. WebSocket clients authenticate with subprotocols
-`["bearer", "<access-token>"]`; tokens in query strings are no longer accepted.
-The compose files now use PostgreSQL 16. Existing PostgreSQL 13 volumes require
-a supported dump/restore or `pg_upgrade` procedure before changing the image.
+Для подключения к локальному frontend:
 
-One-to-one audio and video calls use the authenticated `/calls/ws` signaling
-socket and browser WebRTC. Configure the frontend with
-`NEXT_PUBLIC_CHATWAVE_API_URL`. For reliable production calls, also set
-`NEXT_PUBLIC_CHATWAVE_ICE_SERVERS` to a JSON array containing your STUN and
-authenticated TURN servers; public STUN alone cannot traverse every NAT or
-firewall.
+```bash
+CHATWAVE_APP_URL=http://localhost:3000 npm start
+```
 
-## ❤️ Contributing
+### Сборка Windows
 
-You can help by testing, opening issues, or contributing code.
-Also check out our frontend repo [ChatWave Web](https://github.com/lifufkd/chatwave-web)
+```bash
+npm run build:win:x64
+npm run build:win:arm64
+```
 
-## 📜 License
-Distributed under the GPLv3 License. See [LICENSE](https://github.com/lifufkd/ChatWave/blob/main/LICENSE) for more information.
+### Сборка macOS
+
+```bash
+npm run build:mac -- --arm64
+npm run build:mac -- --x64
+```
+
+Готовые файлы создаются в `desktop/release/`. Публичные сборки рекомендуется
+подписать: Authenticode для Windows и Developer ID с notarization для macOS.
+
+## Android и iOS
+
+Установите зависимости:
+
+```bash
+cd mobile
+npm install
+```
+
+Android:
+
+```bash
+npm run android:sync
+npm run android:open
+```
+
+iOS:
+
+```bash
+npm run ios:sync
+npm run ios:open
+```
+
+Android-проект открывается в Android Studio. Для iOS необходимы macOS, Xcode и
+Apple Developer Team для установки на реальное устройство.
+
+## E2EE
+
+Криптографические операции выполняются на клиенте. Сервер хранит зашифрованное
+содержимое и служебные данные, необходимые для синхронизации устройств.
+Recovery key нужен для восстановления доступа к истории на новом устройстве.
+
+E2EE не скрывает все метаданные: сервер по-прежнему обрабатывает аккаунты,
+состав диалогов, время событий и доставку сообщений. Актуальная схема и модель
+угроз описаны в `docs/E2EE_ARCHITECTURE.md`.
+
+## Конфигурация
+
+Основные переменные находятся в `.env.example`:
+
+- `DB_*` — подключение к PostgreSQL;
+- `REDIS_*` — подключение к Redis;
+- `JWT_SECRET_KEY` — ключ подписи токенов, не короче 64 символов;
+- `API_CORS_ALLOW_ORIGINS` — разрешённые адреса frontend;
+- `MEDIA_FOLDER` — хранилище загруженных файлов;
+- `STUN_URLS`, `TURN_URLS`, `TURN_SHARED_SECRET` — связь WebRTC;
+- `MAX_UPLOAD_*` — ограничения размера файлов;
+- `RATE_LIMIT_*` — ограничения частоты запросов;
+- `REFRESH_SESSION_EXPIRES_SECONDS` — срок жизни пользовательской сессии.
+
+Никогда не добавляйте рабочий `.env`, приватные ключи, сертификаты и recovery
+key в Git.
+
+## Участие в разработке
+
+1. Создайте отдельную ветку.
+2. Внесите небольшое, логически завершённое изменение.
+3. Добавьте или обновите тесты.
+4. Проверьте frontend и backend.
+5. Отправьте pull request с описанием изменения и способом проверки.
+
+Сообщения об ошибках должны содержать платформу, версию клиента, шаги
+воспроизведения и релевантные логи без токенов и личных данных.
+
+## Лицензия
+
+Проект распространяется на условиях GNU General Public License v3.0. Полный
+текст находится в файле `LICENSE`.
