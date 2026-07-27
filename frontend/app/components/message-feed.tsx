@@ -3,6 +3,7 @@
 import {
   CSSProperties,
   memo,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -11,14 +12,13 @@ import {
 import {
   Check,
   CheckCheck,
+  CheckSquare2,
+  Copy,
+  Forward,
   LockKeyhole,
   MessageCircleMore,
-  MoreHorizontal,
-  Pencil,
-  Pin,
   PhoneCall,
   RotateCcw,
-  Smile,
   Trash2,
 } from "lucide-react";
 import { Chat, HistoryState, Message } from "../models";
@@ -67,8 +67,11 @@ type MessageFeedProps = {
   onReply: (message: Message) => void;
   onEdit: (message: Message) => void;
   onDelete: (message: Message) => void;
+  onCopy: (message: Message) => void;
+  onForward: (message: Message) => void;
   onRetry: (message: Message) => void;
   onPin: (message: Message) => void;
+  onStartSelection: (messageId: number) => void;
   onToggleSelection: (messageId: number) => void;
   onOpenProfile: (userId: number) => void;
 };
@@ -91,8 +94,11 @@ type MessageFeedItemProps = {
   onReply: (message: Message) => void;
   onEdit: (message: Message) => void;
   onDelete: (message: Message) => void;
+  onCopy: (message: Message) => void;
+  onForward: (message: Message) => void;
   onRetry: (message: Message) => void;
   onPin: (message: Message) => void;
+  onStartSelection: (messageId: number) => void;
   onToggleSelection: (messageId: number) => void;
   onOpenProfile: (userId: number) => void;
 };
@@ -115,15 +121,50 @@ const MessageFeedItem = memo(function MessageFeedItem({
   onReply,
   onEdit,
   onDelete,
+  onCopy,
+  onForward,
   onRetry,
   onPin,
+  onStartSelection,
   onToggleSelection,
   onOpenProfile,
 }: MessageFeedItemProps) {
-  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const pointerOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const suppressClickRef = useRef(false);
   const renderKey = message.clientMessageId
     ? `client-${message.clientMessageId}`
     : `message-${message.id}`;
+
+  const cancelLongPress = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    pointerOriginRef.current = null;
+  };
+
+  useEffect(() => {
+    if (!actionsOpen) return;
+    const close = (event: PointerEvent) => {
+      if (!actionsRef.current?.contains(event.target as Node)) {
+        setActionsOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setActionsOpen(false);
+    };
+    document.addEventListener("pointerdown", close);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [actionsOpen]);
+
+  useEffect(() => cancelLongPress, []);
 
   if (message.callEvent) {
     const minutes = Math.floor(message.callEvent.duration / 60);
@@ -180,6 +221,46 @@ const MessageFeedItem = memo(function MessageFeedItem({
           ? () => onToggleSelection(message.id)
           : undefined
       }
+      onContextMenu={(event) => {
+        if (message.pending || message.failed || selectionMode) return;
+        event.preventDefault();
+        setActionsOpen(true);
+      }}
+      onPointerDown={(event) => {
+        if (
+          event.pointerType === "mouse" ||
+          message.pending ||
+          message.failed ||
+          selectionMode
+        ) {
+          return;
+        }
+        pointerOriginRef.current = { x: event.clientX, y: event.clientY };
+        longPressTimerRef.current = window.setTimeout(() => {
+          suppressClickRef.current = true;
+          setActionsOpen(true);
+          if ("vibrate" in navigator) navigator.vibrate(12);
+          cancelLongPress();
+        }, 480);
+      }}
+      onPointerMove={(event) => {
+        const origin = pointerOriginRef.current;
+        if (
+          origin &&
+          (Math.abs(event.clientX - origin.x) > 10 ||
+            Math.abs(event.clientY - origin.y) > 10)
+        ) {
+          cancelLongPress();
+        }
+      }}
+      onPointerUp={cancelLongPress}
+      onPointerCancel={cancelLongPress}
+      onClickCapture={(event) => {
+        if (!suppressClickRef.current) return;
+        suppressClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
     >
       {selectionMode && !message.pending && !message.failed && (
         <button
@@ -312,72 +393,79 @@ const MessageFeedItem = memo(function MessageFeedItem({
         )}
       </div>
 
-      {!selectionMode && (
-        <>
-        <button
-          className="mobile-message-more"
-          aria-label="Действия с сообщением"
-          aria-expanded={mobileActionsOpen}
-          onClick={(event) => {
-            event.stopPropagation();
-            setMobileActionsOpen((current) => !current);
-          }}
-        >
-          <MoreHorizontal size={16} />
-        </button>
+      {!selectionMode && actionsOpen && (
         <div
-          className={`message-actions ${
-            mobileActionsOpen ? "mobile-open" : ""
-          }`}
-          onClick={() => setMobileActionsOpen(false)}
+          ref={actionsRef}
+          className="message-context-menu"
+          role="menu"
+          aria-label="Действия с сообщением"
+          onClick={(event) => event.stopPropagation()}
         >
-          <button
-            aria-label="Реакция"
-            onClick={() => onToggleReactionPicker(message.id)}
-            disabled={!connected || !conversationId}
-          >
-            <Smile size={15} />
-          </button>
-          <button aria-label="Ответить" onClick={() => onReply(message)}>
-            <MessageCircleMore size={15} />
-          </button>
-          {connected && conversationId && message.id > 0 && (
-            <button
-              aria-label="Закрепить сообщение"
-              title="Закрепить"
-              onClick={() => onPin(message)}
-            >
-              <Pin size={15} />
-            </button>
-          )}
-          {connected &&
-          conversationId &&
-          !message.pending &&
-          !message.failed ? (
-            <>
-              {message.own && !message.encrypted && (
-                <button
-                  aria-label="Изменить сообщение"
-                  onClick={() => onEdit(message)}
-                >
-                  <Pencil size={15} />
-                </button>
-              )}
+          <div className="message-context-reactions" aria-label="Реакции">
+            {REACTION_EMOJIS.map((emoji) => (
               <button
-                aria-label="Удалить сообщение"
-                className="danger"
-                onClick={() => onDelete(message)}
+                key={emoji}
+                type="button"
+                disabled={!connected || !conversationId}
+                onClick={() => {
+                  onReact(message, emoji);
+                  setActionsOpen(false);
+                }}
               >
-                <Trash2 size={15} />
+                {emoji}
               </button>
-            </>
-          ) : (
-            <button aria-label="Ещё">
-              <MoreHorizontal size={15} />
+            ))}
+          </div>
+          <div className="message-context-actions">
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onForward(message);
+                setActionsOpen(false);
+              }}
+            >
+              <Forward size={16} />
+              Переслать
             </button>
-          )}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onStartSelection(message.id);
+                setActionsOpen(false);
+              }}
+            >
+              <CheckSquare2 size={16} />
+              Выделить
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onCopy(message);
+                setActionsOpen(false);
+              }}
+            >
+              <Copy size={16} />
+              Скопировать
+            </button>
+            {connected && conversationId && message.id > 0 && (
+              <button
+                type="button"
+                role="menuitem"
+                className="danger"
+                onClick={() => {
+                  onDelete(message);
+                  setActionsOpen(false);
+                }}
+              >
+                <Trash2 size={16} />
+                Удалить
+              </button>
+            )}
+          </div>
         </div>
-        </>
       )}
     </article>
   );
@@ -400,8 +488,11 @@ export function MessageFeed({
   onReply,
   onEdit,
   onDelete,
+  onCopy,
+  onForward,
   onRetry,
   onPin,
+  onStartSelection,
   onToggleSelection,
   onOpenProfile,
 }: MessageFeedProps) {
@@ -527,8 +618,11 @@ export function MessageFeed({
           onReply={onReply}
           onEdit={onEdit}
           onDelete={onDelete}
+          onCopy={onCopy}
+          onForward={onForward}
           onRetry={onRetry}
           onPin={onPin}
+          onStartSelection={onStartSelection}
           onToggleSelection={onToggleSelection}
           onOpenProfile={onOpenProfile}
           />

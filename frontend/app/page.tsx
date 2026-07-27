@@ -202,6 +202,7 @@ export default function Home() {
     string | null
   >(null);
   const [selectedMessageIds, setSelectedMessageIds] = useState<number[]>([]);
+  const [forwardingText, setForwardingText] = useState<string | null>(null);
   const messageSelectionActive =
     messageSelectionOpen && messageSelectionChatId === selectedChat;
   const [messageSearchOpen, setMessageSearchOpen] = useState(false);
@@ -654,7 +655,11 @@ export default function Home() {
       typingRenewTimerRef.current = null;
     }
     setSelectedChat(chat.id);
-    setDraft("");
+    setDraft(forwardingText ?? "");
+    if (forwardingText) {
+      setForwardingText(null);
+      setNotice("Сообщение подготовлено к пересылке.");
+    }
     setEditingMessageId(null);
     setReplyingToId(null);
     setReactionPickerFor(null);
@@ -980,6 +985,39 @@ export default function Home() {
     setEditingMessageId(null);
     setReplyingToId(message.id);
     setDraft("");
+  };
+
+  const copyMessage = async (message: Message) => {
+    const text = message.text.trim();
+    if (!text) {
+      setNotice("У этого сообщения нет текста для копирования.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setNotice("Сообщение скопировано.");
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand("copy");
+      textarea.remove();
+      setNotice(copied ? "Сообщение скопировано." : "Не удалось скопировать сообщение.");
+    }
+  };
+
+  const startForwarding = (message: Message) => {
+    const text = message.text.trim();
+    if (!text) {
+      setNotice("Пересылка медиа без подписи пока недоступна.");
+      return;
+    }
+    setForwardingText(text);
+    setMobileChats(true);
+    setNotice("Выберите чат для пересылки.");
   };
 
   const cancelReply = () => {
@@ -1481,21 +1519,6 @@ export default function Home() {
                 </>
               )}
               {iconButton(
-                "Выбрать сообщения",
-                <ListChecks size={18} />,
-                `mobile-hide-compact ${
-                  messageSelectionActive ? "active" : ""
-                }`,
-                () => {
-                  setMessageSelectionOpen(!messageSelectionActive);
-                  setMessageSelectionChatId(
-                    messageSelectionActive ? null : selectedChat,
-                  );
-                  setSelectedMessageIds([]);
-                },
-                !activeChat.conversationId || !connectedUser,
-              )}
-              {iconButton(
                 "Поиск в чате",
                 <Search size={18} />,
                 messageSearchOpen ? "active" : "",
@@ -1588,6 +1611,8 @@ export default function Home() {
                 onReply={startReply}
                 onEdit={startEditing}
                 onDelete={(message) => void messageMutations.remove(message)}
+                onCopy={(message) => void copyMessage(message)}
+                onForward={startForwarding}
                 onRetry={(message) => void retryMessage(message)}
                 onPin={(message) => {
                   void chatWaveApi
@@ -1605,6 +1630,11 @@ export default function Home() {
                       : [...current, messageId],
                   )
                 }
+                onStartSelection={(messageId) => {
+                  setMessageSelectionOpen(true);
+                  setMessageSelectionChatId(selectedChat);
+                  setSelectedMessageIds([messageId]);
+                }}
                 onOpenProfile={setViewingProfileId}
               />
 

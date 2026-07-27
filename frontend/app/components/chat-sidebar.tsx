@@ -7,6 +7,7 @@ import {
   Pin,
   Plus,
   Search,
+  SquarePen,
 } from "lucide-react";
 import { type PointerEvent as ReactPointerEvent } from "react";
 import { ApiActiveGroupCall, ApiUser, chatWaveApi } from "../api";
@@ -65,7 +66,14 @@ export function ChatSidebar({
       }`}
     >
       <header className="sidebar-header">
-        <img className="sidebar-brand-logo" src="/chatwave-logo.svg" alt="ChatWave" />
+        <div className="sidebar-brand">
+          <img
+            className="sidebar-brand-logo"
+            src="/chatwave-logo.svg"
+            alt="ChatWave"
+          />
+          <strong>Сообщения</strong>
+        </div>
         <div className="sidebar-header-actions">
           <button
             className="sidebar-profile-avatar"
@@ -88,7 +96,7 @@ export function ChatSidebar({
             title="Новое сообщение"
             onClick={onNewConversation}
           >
-            <Plus size={18} />
+            <SquarePen size={18} />
           </button>
         </div>
       </header>

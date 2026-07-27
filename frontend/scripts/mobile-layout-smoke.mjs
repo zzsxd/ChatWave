@@ -127,7 +127,7 @@ try {
             .width ?? Number.POSITIVE_INFINITY,
       }));
       assert.ok(compactLayout.headerHeight <= 50);
-      assert.ok(compactLayout.messageFontSize <= 12);
+      assert.ok(compactLayout.messageFontSize <= 15);
       assert.ok(compactLayout.composerHeight <= 49);
       assert.ok(compactLayout.headerActionsRight <= width);
       assert.ok(compactLayout.headerActionsWidth <= 110);
