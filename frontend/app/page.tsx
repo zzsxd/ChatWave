@@ -1458,27 +1458,44 @@ export default function Home() {
             >
               <ArrowLeft size={21} />
             </button>
-            <span className={`avatar avatar-${activeChat.accent} header-avatar`}>
-              {activeChat.type === "saved" ? (
-                <Bookmark size={19} fill="currentColor" />
-              ) : activeChat.avatarUrl ? (
-                <img src={activeChat.avatarUrl} alt="" />
-              ) : (
-                activeChat.initials
-              )}
-              {activeChat.online && <i />}
-            </span>
-            <div className="conversation-identity">
-              <div>
-                <strong>{activeChat.title}</strong>
-                <span className="verified">
-                  <ShieldCheck size={13} />
-                </span>
-              </div>
-              <span>
-                {activePresenceText}
+            <button
+              className="conversation-profile-button"
+              type="button"
+              onClick={() => {
+                if (activeChat.type === "direct" && activeChat.recipientId) {
+                  setViewingProfileId(activeChat.recipientId);
+                } else if (activeChat.type === "saved") {
+                  setProfileSettingsOpen(true);
+                } else {
+                  setDetailsOpen(true);
+                }
+              }}
+              aria-label={
+                activeChat.type === "direct"
+                  ? `Открыть профиль ${activeChat.title}`
+                  : `Открыть информацию о ${activeChat.title}`
+              }
+            >
+              <span className={`avatar avatar-${activeChat.accent} header-avatar`}>
+                {activeChat.type === "saved" ? (
+                  <Bookmark size={19} fill="currentColor" />
+                ) : activeChat.avatarUrl ? (
+                  <img src={activeChat.avatarUrl} alt="" />
+                ) : (
+                  activeChat.initials
+                )}
+                {activeChat.online && <i />}
               </span>
-            </div>
+              <span className="conversation-identity">
+                <span>
+                  <strong>{activeChat.title}</strong>
+                  <span className="verified">
+                    <ShieldCheck size={13} />
+                  </span>
+                </span>
+                <span>{activePresenceText}</span>
+              </span>
+            </button>
             <div className="header-actions">
               {activeChat.type !== "saved" && (
                 <>

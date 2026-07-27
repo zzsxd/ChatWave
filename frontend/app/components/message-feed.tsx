@@ -134,9 +134,37 @@ const MessageFeedItem = memo(function MessageFeedItem({
   const longPressTimerRef = useRef<number | null>(null);
   const pointerOriginRef = useRef<{ x: number; y: number } | null>(null);
   const suppressClickRef = useRef(false);
+  const [actionsPosition, setActionsPosition] = useState({ x: 12, y: 12 });
   const renderKey = message.clientMessageId
     ? `client-${message.clientMessageId}`
     : `message-${message.id}`;
+
+  const openActions = (element: HTMLElement) => {
+    const bubble =
+      element.querySelector<HTMLElement>(".message-body") ?? element;
+    const bounds = bubble.getBoundingClientRect();
+    const menuWidth = 224;
+    const menuHeight = 238;
+    const gap = 8;
+    let x = message.own
+      ? bounds.left - menuWidth - gap
+      : bounds.right + gap;
+    if (x < gap) x = bounds.right + gap;
+    if (x + menuWidth > window.innerWidth - gap) {
+      x = bounds.left - menuWidth - gap;
+    }
+    setActionsPosition({
+      x: Math.max(gap, Math.min(x, window.innerWidth - menuWidth - gap)),
+      y: Math.max(
+        gap,
+        Math.min(
+          bounds.top + bounds.height / 2 - menuHeight / 2,
+          window.innerHeight - menuHeight - gap,
+        ),
+      ),
+    });
+    setActionsOpen(true);
+  };
 
   const cancelLongPress = () => {
     if (longPressTimerRef.current !== null) {
@@ -156,10 +184,13 @@ const MessageFeedItem = memo(function MessageFeedItem({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setActionsOpen(false);
     };
+    const closeOnScroll = () => setActionsOpen(false);
     document.addEventListener("pointerdown", close);
+    document.addEventListener("scroll", closeOnScroll, true);
     window.addEventListener("keydown", closeOnEscape);
     return () => {
       document.removeEventListener("pointerdown", close);
+      document.removeEventListener("scroll", closeOnScroll, true);
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [actionsOpen]);
@@ -177,7 +208,7 @@ const MessageFeedItem = memo(function MessageFeedItem({
       <article
         id={`message-${message.id}`}
         data-render-key={renderKey}
-        className={`call-history-event ${
+        className={`call-history-event ${message.own ? "own" : ""} ${
           message.callEvent.outcome !== "completed" ? "missed" : ""
         }`}
         style={{ "--message-index": index } as CSSProperties}
@@ -224,7 +255,7 @@ const MessageFeedItem = memo(function MessageFeedItem({
       onContextMenu={(event) => {
         if (message.pending || message.failed || selectionMode) return;
         event.preventDefault();
-        setActionsOpen(true);
+        openActions(event.currentTarget);
       }}
       onPointerDown={(event) => {
         if (
@@ -235,10 +266,11 @@ const MessageFeedItem = memo(function MessageFeedItem({
         ) {
           return;
         }
+        const messageElement = event.currentTarget;
         pointerOriginRef.current = { x: event.clientX, y: event.clientY };
         longPressTimerRef.current = window.setTimeout(() => {
           suppressClickRef.current = true;
-          setActionsOpen(true);
+          openActions(messageElement);
           if ("vibrate" in navigator) navigator.vibrate(12);
           cancelLongPress();
         }, 480);
@@ -399,6 +431,12 @@ const MessageFeedItem = memo(function MessageFeedItem({
           className="message-context-menu"
           role="menu"
           aria-label="Действия с сообщением"
+          style={
+            {
+              "--message-context-x": `${actionsPosition.x}px`,
+              "--message-context-y": `${actionsPosition.y}px`,
+            } as CSSProperties
+          }
           onClick={(event) => event.stopPropagation()}
         >
           <div className="message-context-reactions" aria-label="Реакции">

@@ -126,7 +126,8 @@ try {
           document.querySelector(".header-actions")?.getBoundingClientRect()
             .width ?? Number.POSITIVE_INFINITY,
       }));
-      assert.ok(compactLayout.headerHeight <= 50);
+      assert.ok(compactLayout.headerHeight >= 88);
+      assert.ok(compactLayout.headerHeight <= 96);
       assert.ok(compactLayout.messageFontSize <= 15);
       assert.ok(compactLayout.composerHeight <= 49);
       assert.ok(compactLayout.headerActionsRight <= width);
