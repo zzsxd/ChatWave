@@ -128,13 +128,25 @@ function serializeCandidate(candidate: RTCIceCandidate): Candidate {
   };
 }
 
-function findVideoSender(peer: RTCPeerConnection) {
+function findVideoSender(
+  peer: RTCPeerConnection,
+  excluded?: RTCRtpSender,
+) {
   return (
     peer
       .getTransceivers()
-      .find((transceiver) => transceiver.receiver.track.kind === "video")
+      .find(
+        (transceiver) =>
+          transceiver.receiver.track.kind === "video" &&
+          transceiver.sender !== excluded,
+      )
       ?.sender ??
-    peer.getSenders().find((sender) => sender.track?.kind === "video")
+    peer
+      .getSenders()
+      .find(
+        (sender) =>
+          sender !== excluded && sender.track?.kind === "video",
+      )
   );
 }
 
@@ -596,10 +608,15 @@ export function useCall(enabled: boolean) {
         iceTransportPolicy: "all",
       });
       const source = localStreamRef.current;
+      const activeScreenTrack =
+        screenTrackRef.current?.readyState === "live"
+          ? screenTrackRef.current
+          : undefined;
       const videoTrack =
-        cameraTrackRef.current?.readyState === "live"
+        activeScreenTrack ??
+        (cameraTrackRef.current?.readyState === "live"
           ? cameraTrackRef.current
-          : source?.getVideoTracks()[0];
+          : source?.getVideoTracks()[0]);
       const audioTrack = source?.getAudioTracks()[0];
       const outbound = new MediaStream(
         [audioTrack, videoTrack].filter(
@@ -607,10 +624,9 @@ export function useCall(enabled: boolean) {
         ),
       );
       addPrimaryCallTransceivers(peer, outbound);
-      const activeScreenTrack =
-        screenTrackRef.current?.readyState === "live"
-          ? screenTrackRef.current
-          : undefined;
+      if (activeScreenTrack) {
+        screenVideoFallbackPeersRef.current.add(peer);
+      }
       const screenVideoTransceiver = peer.addTransceiver(
         activeScreenTrack ?? "video",
         { direction: "sendrecv" },
@@ -1394,7 +1410,7 @@ export function useCall(enabled: boolean) {
           ? [peerRef.current]
           : [];
       const videoSenders = peers
-        .map(findVideoSender)
+        .map((peer) => findVideoSender(peer))
         .filter((sender): sender is RTCRtpSender => Boolean(sender));
       if (!videoSenders.length && !groupModeRef.current) {
         throw new Error("Видеоканал звонка недоступен");
@@ -1449,21 +1465,6 @@ export function useCall(enabled: boolean) {
       : peerRef.current
         ? [peerRef.current]
         : [];
-    const videoTargets = peers
-      .map((peer) => ({
-        peer,
-        sender:
-          screenVideoSendersRef.current.get(peer) ??
-          (screenVideoFallbackPeersRef.current.has(peer)
-            ? findVideoSender(peer)
-            : undefined),
-      }))
-      .filter(
-        (target): target is {
-          peer: RTCPeerConnection;
-          sender: RTCRtpSender;
-        } => Boolean(target.sender),
-      );
     const cameraTrack =
       cameraTrackRef.current?.readyState === "live"
         ? cameraTrackRef.current
@@ -1472,15 +1473,23 @@ export function useCall(enabled: boolean) {
       .map((peer) => screenAudioSendersRef.current.get(peer))
       .filter((sender): sender is RTCRtpSender => Boolean(sender));
     try {
-      await Promise.all(
-        videoTargets.map(({ peer, sender }) =>
-          sender.replaceTrack(
-            screenVideoFallbackPeersRef.current.has(peer)
-              ? cameraTrack
-              : null,
-          ),
-        ),
-      );
+      const videoRestores = peers.flatMap((peer) => {
+        const dedicatedSender = screenVideoSendersRef.current.get(peer);
+        const primarySender = findVideoSender(peer, dedicatedSender);
+        const restores: Promise<void>[] = [];
+        if (dedicatedSender) {
+          restores.push(dedicatedSender.replaceTrack(null));
+        }
+        if (
+          primarySender &&
+          (screenVideoFallbackPeersRef.current.has(peer) ||
+            !dedicatedSender)
+        ) {
+          restores.push(primarySender.replaceTrack(cameraTrack));
+        }
+        return restores;
+      });
+      await Promise.all(videoRestores);
       await Promise.all(
         screenAudioSenders.map((sender) => sender.replaceTrack(null)),
       );
@@ -1595,6 +1604,11 @@ export function useCall(enabled: boolean) {
           );
         }
       } else {
+        if (!navigator.mediaDevices?.getDisplayMedia) {
+          throw new Error(
+            "Этот браузер не поддерживает демонстрацию экрана",
+          );
+        }
         const preferredDisplayOptions = {
           video: {
             width: { ideal: quality.width },
@@ -1618,14 +1632,38 @@ export function useCall(enabled: boolean) {
               preferredDisplayOptions,
             );
         } catch (reason) {
-          if (!(reason instanceof TypeError)) throw reason;
-          // Older Chromium and Safari reject non-standard picker hints before
-          // opening the chooser. Let those browsers choose quality themselves.
-          displayStream =
-            await navigator.mediaDevices.getDisplayMedia({
-              video: true,
-              audio: true,
-            });
+          if (
+            reason instanceof DOMException &&
+            reason.name === "NotAllowedError"
+          ) {
+            throw reason;
+          }
+          try {
+            // Older Chromium and Safari reject non-standard picker hints
+            // before opening the chooser.
+            displayStream =
+              await navigator.mediaDevices.getDisplayMedia({
+                video: true,
+                audio: true,
+              });
+          } catch (fallbackReason) {
+            if (
+              fallbackReason instanceof DOMException &&
+              fallbackReason.name === "NotAllowedError"
+            ) {
+              throw fallbackReason;
+            }
+            // A number of drivers expose display video but reject system
+            // audio. Keep the demonstration usable instead of failing both.
+            displayStream =
+              await navigator.mediaDevices.getDisplayMedia({
+                video: true,
+                audio: false,
+              });
+            setScreenShareError(
+              "Экран транслируется без системного звука: аудиозахват недоступен",
+            );
+          }
         }
       }
       desktopCaptureSelectionRef.current = null;
@@ -1635,23 +1673,26 @@ export function useCall(enabled: boolean) {
         : peerRef.current
           ? [peerRef.current]
           : [];
-      const videoTargets = peers
-        .map((peer) => {
-          const dedicatedSender = screenVideoSendersRef.current.get(peer);
-          const sender = dedicatedSender ?? findVideoSender(peer);
-          if (sender && !dedicatedSender) {
-            screenVideoFallbackPeersRef.current.add(peer);
-          }
-          return sender ? { peer, sender } : null;
-        })
-        .filter(
-          (
-            target,
-          ): target is {
-            peer: RTCPeerConnection;
-            sender: RTCRtpSender;
-          } => Boolean(target),
-        );
+      const videoTargets = peers.flatMap((peer) => {
+        const dedicatedSender = screenVideoSendersRef.current.get(peer);
+        const primarySender = findVideoSender(peer, dedicatedSender);
+        const targets: Array<{
+          peer: RTCPeerConnection;
+          sender: RTCRtpSender;
+        }> = [];
+        if (dedicatedSender) {
+          targets.push({ peer, sender: dedicatedSender });
+        }
+        if (primarySender) {
+          // Some Chromium/Electron combinations negotiate an inactive
+          // dedicated screen m-line and never start RTP after replaceTrack().
+          // Mirroring to the already active primary video sender keeps screen
+          // sharing reliable; stopScreenShare restores the camera track.
+          screenVideoFallbackPeersRef.current.add(peer);
+          targets.push({ peer, sender: primarySender });
+        }
+        return targets;
+      });
       if (
         !screenTrack ||
         (videoTargets.length === 0 && !groupModeRef.current)
@@ -1758,7 +1799,7 @@ export function useCall(enabled: boolean) {
             screen_sharing: true,
             screen_audio: sharesAudio,
             microphone_muted: mutedRef.current,
-            camera_enabled: Boolean(cameraTrackRef.current?.enabled),
+            camera_enabled: false,
           });
         } catch {
           // A signaling disconnect is handled by the call socket.
@@ -1772,9 +1813,12 @@ export function useCall(enabled: boolean) {
           ? cameraTrackRef.current
           : null;
       await Promise.allSettled(
-        [...screenVideoFallbackPeersRef.current].map((peer) =>
-          findVideoSender(peer)?.replaceTrack(cameraTrack),
-        ),
+        [...screenVideoFallbackPeersRef.current].map((peer) => {
+          const dedicatedSender = screenVideoSendersRef.current.get(peer);
+          return findVideoSender(peer, dedicatedSender)?.replaceTrack(
+            cameraTrack,
+          );
+        }),
       );
       screenVideoFallbackPeersRef.current.clear();
       if (reason instanceof DOMException && reason.name === "NotAllowedError") {

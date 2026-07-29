@@ -2215,22 +2215,38 @@ function CallOverlay({
   } | null>(null);
   const [localPreviewExpanded, setLocalPreviewExpanded] = useState(false);
   const [callPosition, setCallPosition] = useState({ x: 0, y: 0 });
-  const [mobileCallDevice, setMobileCallDevice] = useState(false);
+  const [mobileCallDevice] = useState(
+    () =>
+      typeof navigator !== "undefined" &&
+      (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+        window.matchMedia("(max-width: 760px) and (pointer: coarse)").matches),
+  );
   const remoteHasVideo = Boolean(
     remoteStream
       ?.getVideoTracks()
       .some((track) => track.readyState === "live" && !track.muted),
   );
-  const remoteHasScreenVideo = Boolean(
+  const dedicatedRemoteHasScreenVideo = Boolean(
     remoteScreenStream
       ?.getVideoTracks()
       .some((track) => track.readyState === "live" && !track.muted),
   );
+  const primaryRemoteHasScreenVideo = Boolean(
+    remoteStream
+      ?.getVideoTracks()
+      .some((track) => track.readyState === "live" && !track.muted),
+  );
+  const remoteScreenVideoStream = dedicatedRemoteHasScreenVideo
+    ? remoteScreenStream
+    : remoteScreenSharing && primaryRemoteHasScreenVideo
+      ? remoteStream
+      : null;
+  const remoteHasScreenVideo = Boolean(remoteScreenVideoStream);
   const remoteScreenActive = remoteScreenSharing && remoteHasScreenVideo;
   const remoteVisualActive =
     remoteScreenActive || (remoteHasVideo && remoteCameraEnabled);
   const primaryRemoteVisualStream = remoteScreenActive
-    ? remoteScreenStream
+    ? remoteScreenVideoStream
     : remoteStream;
   const localPreviewStream =
     screenSharing && localScreenStream ? localScreenStream : localStream;
@@ -2251,13 +2267,23 @@ function CallOverlay({
   const groupAudioStreams = Object.entries(remoteStreams).filter(([, stream]) =>
     stream.getAudioTracks().some((track) => track.readyState === "live"),
   );
-
-  useEffect(() => {
-    setMobileCallDevice(
-      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
-        window.matchMedia("(max-width: 760px) and (pointer: coarse)").matches,
-    );
-  }, []);
+  const groupScreenStreamFor = (userId: number) => {
+    const dedicated = groupScreenStreams[userId];
+    if (
+      dedicated
+        ?.getVideoTracks()
+        .some((track) => track.readyState === "live" && !track.muted)
+    ) {
+      return dedicated;
+    }
+    const primary = remoteStreams[userId];
+    return remoteMediaStates[userId]?.screenSharing &&
+      primary
+        ?.getVideoTracks()
+        .some((track) => track.readyState === "live" && !track.muted)
+      ? primary
+      : null;
+  };
 
   useEffect(() => {
     const callActive =
@@ -2688,7 +2714,7 @@ function CallOverlay({
                 groupParticipantIds.filter(
                   (userId) =>
                     remoteMediaStates[userId]?.screenSharing &&
-                    groupScreenStreams[userId],
+                    groupScreenStreamFor(userId),
                 ).length +
                 (screenSharing && localScreenStream ? 1 : 0),
               6,
@@ -2744,7 +2770,7 @@ function CallOverlay({
               .filter(
                 (userId) =>
                   remoteMediaStates[userId]?.screenSharing &&
-                  groupScreenStreams[userId],
+                  groupScreenStreamFor(userId),
               )
               .map((userId) => {
                 const participant = participants[userId] ?? {
@@ -2754,7 +2780,7 @@ function CallOverlay({
                 return (
                   <GroupStreamTile
                     key={`screen-${userId}`}
-                    stream={groupScreenStreams[userId]}
+                    stream={groupScreenStreamFor(userId)}
                     name={`${participant.name} · Экран`}
                     initials={participant.initials}
                     avatarUrl={participant.avatarUrl}
