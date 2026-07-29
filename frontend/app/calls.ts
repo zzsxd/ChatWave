@@ -1571,14 +1571,6 @@ export function useCall(enabled: boolean) {
     let displayStream: MediaStream | null = null;
     try {
       const quality = SCREEN_SHARE_PRESETS[screenShareQuality];
-      const supportedConstraints =
-        navigator.mediaDevices.getSupportedConstraints() as Record<
-          string,
-          boolean | undefined
-        >;
-      const protectsOwnAudio = Boolean(
-        supportedConstraints.restrictOwnAudio,
-      );
       const desktopSelection = desktopCaptureSelectionRef.current;
       if (window.chatWaveDesktop && desktopSelection) {
         const captureDesktop = (withAudio: boolean) =>
@@ -1609,62 +1601,17 @@ export function useCall(enabled: boolean) {
             "Этот браузер не поддерживает демонстрацию экрана",
           );
         }
-        const preferredDisplayOptions = {
-          video: {
-            width: { ideal: quality.width },
-            height: { ideal: quality.height },
-            frameRate: { ideal: quality.fps, max: quality.fps },
-          },
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
-            channelCount: { ideal: 2 },
-            sampleRate: { ideal: 48_000 },
-            ...(protectsOwnAudio ? { restrictOwnAudio: true } : {}),
-          },
-          selfBrowserSurface: "exclude",
-          systemAudio: "include",
-        } as DisplayMediaStreamOptions;
-        try {
-          displayStream =
-            await navigator.mediaDevices.getDisplayMedia(
-              preferredDisplayOptions,
-            );
-        } catch (reason) {
-          if (
-            reason instanceof DOMException &&
-            reason.name === "NotAllowedError"
-          ) {
-            throw reason;
-          }
-          try {
-            // Older Chromium and Safari reject non-standard picker hints
-            // before opening the chooser.
-            displayStream =
-              await navigator.mediaDevices.getDisplayMedia({
-                video: true,
-                audio: true,
-              });
-          } catch (fallbackReason) {
-            if (
-              fallbackReason instanceof DOMException &&
-              fallbackReason.name === "NotAllowedError"
-            ) {
-              throw fallbackReason;
-            }
-            // A number of drivers expose display video but reject system
-            // audio. Keep the demonstration usable instead of failing both.
-            displayStream =
-              await navigator.mediaDevices.getDisplayMedia({
-                video: true,
-                audio: false,
-              });
-            setScreenShareError(
-              "Экран транслируется без системного звука: аудиозахват недоступен",
-            );
-          }
-        }
+        // Keep this to one standards-compatible request. A second
+        // getDisplayMedia() call after the chooser closes is no longer covered
+        // by the original user activation and Safari/Firefox/Chromium may
+        // reject it even though the user has just selected a source.
+        // Browser-specific quality constraints are applied to the returned
+        // track below.
+        displayStream =
+          await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: true,
+          });
       }
       desktopCaptureSelectionRef.current = null;
       const screenTrack = displayStream.getVideoTracks()[0];
@@ -1679,17 +1626,17 @@ export function useCall(enabled: boolean) {
         const targets: Array<{
           peer: RTCPeerConnection;
           sender: RTCRtpSender;
+          primary: boolean;
         }> = [];
         if (dedicatedSender) {
-          targets.push({ peer, sender: dedicatedSender });
+          targets.push({ peer, sender: dedicatedSender, primary: false });
         }
         if (primarySender) {
           // Some Chromium/Electron combinations negotiate an inactive
           // dedicated screen m-line and never start RTP after replaceTrack().
           // Mirroring to the already active primary video sender keeps screen
           // sharing reliable; stopScreenShare restores the camera track.
-          screenVideoFallbackPeersRef.current.add(peer);
-          targets.push({ peer, sender: primarySender });
+          targets.push({ peer, sender: primarySender, primary: true });
         }
         return targets;
       });
@@ -1708,10 +1655,24 @@ export function useCall(enabled: boolean) {
           frameRate: { ideal: quality.fps, max: quality.fps },
         })
         .catch(() => undefined);
-      await Promise.all(
+      const replaceResults = await Promise.allSettled(
         videoTargets.map(({ sender }) => sender.replaceTrack(screenTrack)),
       );
-      for (const { sender: videoSender } of videoTargets) {
+      const successfulVideoTargets = videoTargets.filter(
+        (_target, index) => replaceResults[index]?.status === "fulfilled",
+      );
+      if (
+        successfulVideoTargets.length === 0 &&
+        !groupModeRef.current
+      ) {
+        throw new Error("Не удалось подключить видеоканал демонстрации");
+      }
+      for (const target of successfulVideoTargets) {
+        if (target.primary) {
+          screenVideoFallbackPeersRef.current.add(target.peer);
+        }
+      }
+      for (const { sender: videoSender } of successfulVideoTargets) {
         try {
           const senderParameters = videoSender.getParameters();
           senderParameters.degradationPreference = "maintain-resolution";
@@ -1735,49 +1696,68 @@ export function useCall(enabled: boolean) {
       const displayAudioTrack = displayStream.getAudioTracks()[0] ?? null;
       let sharesAudio = false;
       if (displayAudioTrack) {
-        if (!protectsOwnAudio) {
-          displayAudioTrack.stop();
-          setScreenShareError(
-            "Экран транслируется без звука: браузер не поддерживает защиту от эха",
-          );
-        } else {
-          const screenAudioSenders = peers
-            .map((peer) => screenAudioSendersRef.current.get(peer))
-            .filter((sender): sender is RTCRtpSender => Boolean(sender));
-          if (screenAudioSenders.length > 0 || groupModeRef.current) {
-            try {
-              displayAudioTrack.contentHint = "music";
-              await Promise.all(
-                screenAudioSenders.map((sender) =>
-                  sender.replaceTrack(displayAudioTrack),
-                ),
-              );
-              for (const audioSender of screenAudioSenders) {
-                try {
-                  const audioParameters = audioSender.getParameters();
-                  if (audioParameters.encodings.length === 0) {
-                    audioParameters.encodings = [{}];
-                  }
-                  audioParameters.encodings = audioParameters.encodings.map(
-                    (encoding) => ({ ...encoding, maxBitrate: 256_000 }),
-                  );
-                  await audioSender.setParameters(audioParameters);
-                } catch {
-                  // The browser may choose the Opus bitrate automatically.
-                }
-              }
-              screenAudioTrackRef.current = displayAudioTrack;
-              sharesAudio = true;
-            } catch {
-              displayAudioTrack.stop();
-              setScreenShareError(
-                "Экран транслируется без звука: не удалось подключить аудиоканал",
-              );
-            }
-          } else {
-            displayAudioTrack.stop();
-          }
+        const supportedConstraints =
+          navigator.mediaDevices.getSupportedConstraints() as Record<
+            string,
+            boolean | undefined
+          >;
+        if (supportedConstraints.restrictOwnAudio) {
+          await displayAudioTrack
+            .applyConstraints({
+              restrictOwnAudio: true,
+            } as MediaTrackConstraints)
+            .catch(() => undefined);
         }
+        const screenAudioSenders = peers
+          .map((peer) => screenAudioSendersRef.current.get(peer))
+          .filter((sender): sender is RTCRtpSender => Boolean(sender));
+        if (screenAudioSenders.length > 0 || groupModeRef.current) {
+          try {
+            displayAudioTrack.contentHint = "music";
+            const audioResults = await Promise.allSettled(
+              screenAudioSenders.map((sender) =>
+                sender.replaceTrack(displayAudioTrack),
+              ),
+            );
+            const activeAudioSenders = screenAudioSenders.filter(
+              (_sender, index) =>
+                audioResults[index]?.status === "fulfilled",
+            );
+            if (
+              activeAudioSenders.length === 0 &&
+              !groupModeRef.current
+            ) {
+              throw new Error("Аудиоканал демонстрации недоступен");
+            }
+            for (const audioSender of activeAudioSenders) {
+              try {
+                const audioParameters = audioSender.getParameters();
+                if (audioParameters.encodings.length === 0) {
+                  audioParameters.encodings = [{}];
+                }
+                audioParameters.encodings = audioParameters.encodings.map(
+                  (encoding) => ({ ...encoding, maxBitrate: 256_000 }),
+                );
+                await audioSender.setParameters(audioParameters);
+              } catch {
+                // The browser may choose the Opus bitrate automatically.
+              }
+            }
+            screenAudioTrackRef.current = displayAudioTrack;
+            sharesAudio = true;
+          } catch {
+            displayAudioTrack.stop();
+            setScreenShareError(
+              "Экран транслируется без звука: не удалось подключить аудиоканал",
+            );
+          }
+        } else {
+          displayAudioTrack.stop();
+        }
+      } else if (!window.chatWaveDesktop) {
+        setScreenShareError(
+          "Экран транслируется без звука: выбранный источник или браузер не передал системное аудио",
+        );
       }
       screenTrackRef.current = screenTrack;
       screenTrack.onended = () => {

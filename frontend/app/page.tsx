@@ -2012,8 +2012,10 @@ function DesktopScreenPicker({
   onSelect: (sourceId: string, withAudio: boolean) => void;
   onCancel: () => void;
 }) {
+  const desktopPlatform = window.chatWaveDesktop?.platform;
   const supportsSystemAudio =
-    window.chatWaveDesktop?.supportsSystemAudio ?? false;
+    Boolean(window.chatWaveDesktop?.supportsSystemAudio) ||
+    desktopPlatform === "win32";
   const [withAudio, setWithAudio] = useState(false);
   const [sourceTab, setSourceTab] = useState<"window" | "screen">(
     sources.some((source) => source.kind === "window")
@@ -2071,11 +2073,18 @@ function DesktopScreenPicker({
               type="checkbox"
               checked={withAudio}
               disabled={!supportsSystemAudio}
+              title={
+                supportsSystemAudio
+                  ? "Передавать системный звук вместе с экраном"
+                  : "Electron поддерживает системный звук демонстрации только в Windows"
+              }
               onChange={(event) => setWithAudio(event.currentTarget.checked)}
             />
             {supportsSystemAudio
               ? "Передавать системный звук"
-              : "Системный звук доступен в Windows"}
+              : desktopPlatform === "darwin"
+                ? "Системный звук пока недоступен в приложении для macOS"
+                : "Системный звук доступен в приложении для Windows"}
           </label>
           <small>ChatWave Desktop · до 1440p / 60 FPS</small>
         </footer>
