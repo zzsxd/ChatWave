@@ -1578,22 +1578,36 @@ export function useCall(enabled: boolean) {
             video: true,
             audio: withAudio,
           });
-        try {
-          displayStream = await captureDesktop(desktopSelection.withAudio);
-        } catch (reason) {
-          if (!desktopSelection.withAudio) throw reason;
-
-          // Loopback capture is not available on every Windows device/driver.
-          // Re-arm Electron's one-shot source selection and preserve the
-          // screen video instead of failing the entire demonstration.
-          await window.chatWaveDesktop.selectScreenSource(
-            desktopSelection.sourceId,
-            false,
-          );
-          displayStream = await captureDesktop(false);
-          setScreenShareError(
-            "Экран транслируется без системного звука: аудиозахват недоступен",
-          );
+        // Capture the picture independently. On some Windows/Chromium audio
+        // drivers a combined video + loopback request resolves with a live
+        // audio track but a permanently muted/black video track.
+        displayStream = await captureDesktop(false);
+        if (desktopSelection.withAudio) {
+          try {
+            // Electron consumes the selected source after every
+            // getDisplayMedia() call, so arm it once more for the separate
+            // loopback stream.
+            await window.chatWaveDesktop.selectScreenSource(
+              desktopSelection.sourceId,
+              true,
+            );
+            const audioCapture = await captureDesktop(true);
+            const audioTrack = audioCapture.getAudioTracks()[0];
+            audioCapture
+              .getVideoTracks()
+              .forEach((track) => track.stop());
+            if (!audioTrack) {
+              audioCapture.getTracks().forEach((track) => track.stop());
+              throw new Error("Системная аудиодорожка недоступна");
+            }
+            displayStream.addTrack(audioTrack);
+          } catch {
+            // Preserve the already captured screen when loopback is
+            // unavailable on the selected Windows device or driver.
+            setScreenShareError(
+              "Экран транслируется без системного звука: аудиозахват недоступен",
+            );
+          }
         }
       } else {
         if (!navigator.mediaDevices?.getDisplayMedia) {
@@ -1701,7 +1715,10 @@ export function useCall(enabled: boolean) {
             string,
             boolean | undefined
           >;
-        if (supportedConstraints.restrictOwnAudio) {
+        if (
+          !window.chatWaveDesktop &&
+          supportedConstraints.restrictOwnAudio
+        ) {
           await displayAudioTrack
             .applyConstraints({
               restrictOwnAudio: true,
